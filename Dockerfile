@@ -6,10 +6,12 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
 # Install dependencies first so source changes don't bust the npm cache layer.
+# --ignore-scripts: the server postinstall (prisma generate) can't run before
+# the schema is copied in; the client is generated explicitly below instead.
 COPY package.json package-lock.json ./
 COPY server/package.json server/package.json
 COPY web/package.json web/package.json
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY tsconfig.base.json ./
 COPY server ./server
@@ -30,7 +32,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/package.json
 COPY web/package.json web/package.json
-RUN npm ci --omit=dev --workspace server
+# --ignore-scripts: no schema in this stage for the prisma generate
+# postinstall; the generated client is copied from the build stage below.
+# Native deps that ship prebuilds (node-gyp-build style) still work at
+# runtime without their install scripts; the CI smoke test guards this.
+RUN npm ci --omit=dev --workspace server --ignore-scripts
 
 # Bring over the generated Prisma client (query engine + typed client) so it
 # survives the production reinstall. Note: the `prisma` CLI itself remains in
