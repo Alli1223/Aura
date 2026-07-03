@@ -1,5 +1,7 @@
 # Aura
 
+[![CI](https://github.com/Alli1223/Aura/actions/workflows/ci.yml/badge.svg)](https://github.com/Alli1223/Aura/actions/workflows/ci.yml)
+
 A self-hosted media server — organise your Movies, TV Shows, Anime, Personal
 Recordings and other media into libraries, and stream them anywhere through a
 web app with on-demand transcoding.
