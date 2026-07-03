@@ -23,6 +23,7 @@
     "prettier": "^3.6.2"
   },
   "allowScripts": {
+    "argon2@0.44.0": true,
     "@prisma/engines@6.19.3": true,
     "esbuild@0.28.1": true,
     "prisma@6.19.3": true,
