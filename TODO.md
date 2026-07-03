@@ -17,7 +17,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 
 ## Phase 1 — Core Server & Auth
 
-- [ ] **db-schema** — Prisma schema + migrations: users, refresh sessions, libraries, library access grants, media items (movie/show/season/episode), media files/streams, watch state, settings, audit log
+- [x] **db-schema** — Prisma schema + migrations: users, refresh sessions, libraries, library access grants, media items (movie/show/season/episode), media files/streams, watch state, settings, audit log
 - [ ] **auth-registration** — Open user registration (username/email/password, argon2id), first registered user becomes admin (first-run setup), login/logout, JWT access + rotating refresh tokens (httpOnly cookies)
 - [ ] **rbac-middleware** — Role/permission middleware: `admin` vs `user`, route guards, per-user library access enforcement helpers used by all media routes
 - [ ] **user-management** — Admin API + audit: list/disable/enable/delete users, force password reset, change roles; users can change own password/profile
