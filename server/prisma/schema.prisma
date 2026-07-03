@@ -1,0 +1,16 @@
+// Aura database schema.
+// Models are introduced in Phase 1 (db-schema); this file only initialises
+// the SQLite datasource and client generator.
+//
+// DATABASE_URL examples:
+//   development: file:./dev.db
+//   production:  file:/config/aura.db
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
