@@ -1,0 +1,44 @@
+# Claude working notes — never commit
+CLAUDE.md
+.claude/
+
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime data
+config/
+data/
+transcodes/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
