@@ -65,3 +65,31 @@ jobs:
 
       - name: Build
         run: npm run build -w web
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t aura:ci .
+
+      - name: Smoke test container
+        run: |
+          sudo mkdir -p /tmp/aura-config
+          sudo chown 1000:1000 /tmp/aura-config
+          docker run -d --name aura -p 8096:8096 -v /tmp/aura-config:/config aura:ci
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8096/api/health > /dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "server never became healthy"; docker logs aura; exit 1
+          fi
+          curl -fsS http://localhost:8096/api/health | grep -q '"status":"ok"'
+          curl -fsS http://localhost:8096/ | grep -qi '<!doctype html'
+          test "$(docker exec aura id -u)" = "1000"
+          docker rm -f aura

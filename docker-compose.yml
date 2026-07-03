@@ -1,0 +1,18 @@
+services:
+  aura:
+    build: .
+    container_name: aura
+    ports:
+      - '8096:8096'
+    restart: unless-stopped
+    volumes:
+      # Persistent state: database, cache, transcodes. Create this directory
+      # before first start (`mkdir -p config`) so it is owned by your user —
+      # the container runs as uid 1000 and must be able to write to it.
+      - ./config:/config
+      # Media libraries — point these at your host folders. Read-only.
+      - ./media/movies:/media/movies:ro
+      - ./media/tv:/media/tv:ro
+      - ./media/anime:/media/anime:ro
+      - ./media/recordings:/media/recordings:ro
+      - ./media/other:/media/other:ro

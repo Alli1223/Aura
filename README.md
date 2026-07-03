@@ -21,10 +21,14 @@ web app with on-demand transcoding.
 ## Quick start
 
 ```bash
+# Create the state directory first so it's owned by your user —
+# the container runs as a non-root user (uid 1000).
+mkdir -p config
 docker compose up --build
 ```
 
-Edit `docker-compose.yml` to point the media mounts at your host folders:
+Edit `docker-compose.yml` to point the media mounts at your host folders
+(they default to `./media/*` next to the compose file):
 
 ```yaml
 volumes:
@@ -37,7 +41,9 @@ volumes:
 ```
 
 Then open `http://localhost:8096` — the first account you register becomes
-the admin.
+the admin. `/config` holds all server state (database, cache, transcodes);
+media mounts are read-only, and the container reports its own health via
+`/api/health`.
 
 ## Development
 

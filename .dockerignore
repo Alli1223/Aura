@@ -1,0 +1,56 @@
+# Dependencies & build output (rebuilt inside the image)
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/*.tsbuildinfo
+
+# VCS / CI
+.git
+.gitignore
+.github
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Runtime data — never bake state or media into the image
+config
+data
+media
+transcodes
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Claude working notes
+CLAUDE.md
+.claude
+
+# Tests & tooling artifacts
+coverage
+**/coverage
+playwright-report
+test-results
+logs
+*.log
+
+# Docs & editor noise
+README.md
+TODO.md
+.editorconfig
+.prettierrc
+.prettierignore
+.DS_Store
+.idea
+.vscode
