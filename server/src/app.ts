@@ -3,10 +3,17 @@ import path from 'node:path';
 
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
+import jwt from '@fastify/jwt';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
-import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { FastifyError, FastifyInstance, FastifyServerOptions } from 'fastify';
 
+import { authenticate } from './auth/authenticate.js';
+import { ACCESS_TOKEN_TTL } from './auth/types.js';
+import { loadConfig } from './config.js';
+import { sendError } from './lib/errors.js';
+import { loadOrCreateSecrets } from './lib/secrets.js';
+import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 
 export interface BuildAppOptions {
@@ -22,14 +29,41 @@ export function buildApp(
   options: FastifyServerOptions = {},
   { webDistDir }: BuildAppOptions = {},
 ): FastifyInstance {
+  // Read the environment here (not at module load) so tests can point
+  // CONFIG_DIR/NODE_ENV at per-test values before building the app.
+  const config = loadConfig();
+  const secrets = loadOrCreateSecrets(config.CONFIG_DIR);
+
   const app = Fastify(options);
 
   void app.register(cookie);
   // Strict default: no cross-origin access. The web app is served same-origin
   // (Vite dev proxy in development, static files from this server in production).
   void app.register(cors, { origin: false });
+  void app.register(jwt, {
+    secret: secrets.jwtSecret,
+    sign: { expiresIn: ACCESS_TOKEN_TTL },
+  });
+
+  app.decorate('authenticate', authenticate);
+
+  // Consistent JSON error shape for anything thrown or unhandled.
+  app.setErrorHandler((error, request, reply) => {
+    const err = error instanceof Error ? (error as Partial<FastifyError> & Error) : undefined;
+    const statusCode =
+      err !== undefined && typeof err.statusCode === 'number' && err.statusCode >= 400
+        ? err.statusCode
+        : 500;
+    if (err === undefined || statusCode >= 500) {
+      request.log.error(error);
+      sendError(reply, statusCode, 'INTERNAL', 'Internal server error');
+      return;
+    }
+    sendError(reply, statusCode, err.code ?? 'BAD_REQUEST', err.message);
+  });
 
   void app.register(healthRoutes, { prefix: '/api' });
+  void app.register(authRoutes, { prefix: '/api/auth', config });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
