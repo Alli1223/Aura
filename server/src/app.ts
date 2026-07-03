@@ -9,6 +9,7 @@ import Fastify from 'fastify';
 import type { FastifyError, FastifyInstance, FastifyServerOptions } from 'fastify';
 
 import { authenticate } from './auth/authenticate.js';
+import { requireAdmin } from './auth/guards.js';
 import { ACCESS_TOKEN_TTL } from './auth/types.js';
 import { loadConfig } from './config.js';
 import { sendError } from './lib/errors.js';
@@ -46,6 +47,7 @@ export function buildApp(
   });
 
   app.decorate('authenticate', authenticate);
+  app.decorate('requireAdmin', requireAdmin);
 
   // Consistent JSON error shape for anything thrown or unhandled.
   app.setErrorHandler((error, request, reply) => {
