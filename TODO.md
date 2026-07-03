@@ -11,7 +11,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 ## Phase 0 — Foundation
 
 - [x] Repo bootstrap: README, .gitignore, roadmap
-- [ ] **scaffolding** — Monorepo skeleton: `server/` (Fastify + TS + Prisma/SQLite + Vitest + ESLint), `web/` (React + Vite + TS + Vitest + ESLint), shared tsconfig/prettier, root scripts
+- [x] **scaffolding** — Monorepo skeleton: `server/` (Fastify + TS + Prisma/SQLite + Vitest + ESLint), `web/` (React + Vite + TS + Vitest + ESLint), shared tsconfig/prettier, root scripts
 - [ ] **ci-pipeline** — GitHub Actions: lint, typecheck, unit tests, build for server & web on every PR; branch protection-friendly status checks
 - [ ] **docker** — Multi-stage Dockerfile (non-root user, ffmpeg included), docker-compose.yml with `/config` volume + read-only `/media/{movies,tv,anime,recordings,other}` mounts, healthcheck, .dockerignore
 
