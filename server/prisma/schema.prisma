@@ -1,6 +1,9 @@
-// Aura database schema.
-// Models are introduced in Phase 1 (db-schema); this file only initialises
-// the SQLite datasource and client generator.
+// Aura database schema (SQLite).
+//
+// SQLite has no native enum type, so enum-like columns are plain String
+// fields. The allowed values are defined once in `src/db/constants.ts`
+// (value unions + zod schemas) and must be validated at the application
+// boundary before writing to these columns.
 //
 // DATABASE_URL examples:
 //   development: file:./dev.db
@@ -13,4 +16,228 @@ generator client {
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & sessions
+// ---------------------------------------------------------------------------
+
+model User {
+  id                 String    @id @default(cuid())
+  /// Stored lowercase; normalise before insert/lookup.
+  username           String    @unique
+  email              String?   @unique
+  passwordHash       String
+  /// One of USER_ROLES: "admin" | "user".
+  role               String    @default("user")
+  isEnabled          Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  lastLoginAt        DateTime?
+
+  refreshSessions RefreshSession[]
+  libraryAccess   LibraryAccess[]
+  grantedAccess   LibraryAccess[]  @relation("AccessGrantedBy")
+  watchStates     WatchState[]
+  auditLogs       AuditLog[]
+}
+
+/// Rotating refresh tokens. Only a hash of the token is stored. `replacedById`
+/// links a rotated session to its successor so token reuse can be detected
+/// (a presented token whose session is revoked/replaced => reuse).
+model RefreshSession {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+  replacedById String?
+  userAgent    String?
+  ip           String?
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Libraries & access control
+// ---------------------------------------------------------------------------
+
+model Library {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  /// One of LIBRARY_TYPES: "movies" | "tv" | "anime" | "recordings" | "other".
+  type      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  paths      LibraryPath[]
+  access     LibraryAccess[]
+  mediaItems MediaItem[]
+}
+
+model LibraryPath {
+  id        String  @id @default(cuid())
+  libraryId String
+  library   Library @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  path      String
+
+  @@unique([libraryId, path])
+}
+
+/// Per-user library access grants — THE access-control pivot. Every media
+/// query for a non-admin user must join through this table.
+model LibraryAccess {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  libraryId   String
+  library     Library  @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  grantedAt   DateTime @default(now())
+  grantedById String?
+  grantedBy   User?    @relation("AccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([userId, libraryId])
+  @@index([libraryId])
+}
+
+// ---------------------------------------------------------------------------
+// Media
+// ---------------------------------------------------------------------------
+
+/// Movies, shows, seasons and episodes in one table. Hierarchy via
+/// `parentId` self-relation: episode -> season -> show. Deleting a parent
+/// cascades to all descendants.
+model MediaItem {
+  id        String      @id @default(cuid())
+  libraryId String
+  library   Library     @relation(fields: [libraryId], references: [id], onDelete: Cascade)
+  /// One of MEDIA_ITEM_TYPES: "movie" | "show" | "season" | "episode".
+  type      String
+  parentId  String?
+  parent    MediaItem?  @relation("MediaHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children  MediaItem[] @relation("MediaHierarchy")
+
+  title                 String
+  sortTitle             String
+  year                  Int?
+  overview              String?
+  tagline               String?
+  runtimeMs             Int?
+  seasonNumber          Int?
+  episodeNumber         Int?
+  /// Absolute episode numbering used by anime.
+  absoluteEpisodeNumber Int?
+  contentRating         String?
+  communityRating       Float?
+  tmdbId                Int?
+  imdbId                String?
+  anilistId             Int?
+  posterPath            String?
+  backdropPath          String?
+  addedAt               DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  genres      Genre[]
+  files       MediaFile[]
+  watchStates WatchState[]
+
+  @@index([libraryId, type])
+  @@index([parentId])
+  @@index([title])
+}
+
+model Genre {
+  id   String @id @default(cuid())
+  name String @unique
+
+  mediaItems MediaItem[]
+}
+
+/// A physical file on disk backing a media item. `size`/`mtimeMs` are BigInt
+/// to survive >2GB files and millisecond mtimes.
+model MediaFile {
+  id          String    @id @default(cuid())
+  mediaItemId String
+  mediaItem   MediaItem @relation(fields: [mediaItemId], references: [id], onDelete: Cascade)
+  path        String    @unique
+  size        BigInt
+  mtimeMs     BigInt
+  container   String?
+  durationMs  Int?
+  bitrate     Int?
+  width       Int?
+  height      Int?
+  videoCodec  String?
+  addedAt     DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+  /// One of MEDIA_FILE_STATUSES: "available" | "missing".
+  status      String    @default("available")
+
+  streams MediaStream[]
+
+  @@index([mediaItemId])
+}
+
+/// ffprobe stream info per file, used for playback/transcode decisions.
+model MediaStream {
+  id          String    @id @default(cuid())
+  mediaFileId String
+  mediaFile   MediaFile @relation(fields: [mediaFileId], references: [id], onDelete: Cascade)
+  streamIndex Int
+  /// One of STREAM_TYPES: "video" | "audio" | "subtitle".
+  type        String
+  codec       String?
+  language    String?
+  title       String?
+  channels    Int?
+  isDefault   Boolean   @default(false)
+  isForced    Boolean   @default(false)
+
+  @@unique([mediaFileId, streamIndex])
+}
+
+// ---------------------------------------------------------------------------
+// Per-user state, settings & audit
+// ---------------------------------------------------------------------------
+
+model WatchState {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mediaItemId String
+  mediaItem   MediaItem @relation(fields: [mediaItemId], references: [id], onDelete: Cascade)
+  positionMs  Int       @default(0)
+  watched     Boolean   @default(false)
+  watchedAt   DateTime?
+  playCount   Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, mediaItemId])
+  @@index([mediaItemId])
+}
+
+/// Key/value server settings. `value` is JSON-encoded.
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  /// JSON-encoded details payload.
+  details    String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
 }
