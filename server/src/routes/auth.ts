@@ -207,7 +207,12 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     }
 
     setRefreshCookie(reply, newToken, secureCookies);
-    return reply.send({ accessToken: signAccessToken(session.user) });
+    // Include the safe user shape (with mustChangePassword) so clients can
+    // redirect to a forced password change straight after a refresh.
+    return reply.send({
+      accessToken: signAccessToken(session.user),
+      user: toAuthUser(session.user),
+    });
   });
 
   app.post('/logout', async (request, reply) => {
