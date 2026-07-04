@@ -14,7 +14,7 @@ import {
 } from '../auth/refresh.js';
 import { loginBodySchema, registerBodySchema } from '../auth/schemas.js';
 import { toAuthUser } from '../auth/types.js';
-import type { Config } from '../config.js';
+import { RATE_LIMIT_TIME_WINDOW, type Config } from '../config.js';
 import { getPrisma } from '../db/client.js';
 import { writeAuditLog } from '../lib/audit.js';
 import { sendError } from '../lib/errors.js';
@@ -31,10 +31,20 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
   const prisma = getPrisma();
   const secureCookies = opts.config.NODE_ENV === 'production';
 
+  // Stricter per-route budgets than the global limiter: login/register are
+  // credential-guessing surfaces, refresh is hit routinely by every client.
+  // No-ops unless the rate limit plugin is registered (RATE_LIMIT_ENABLED).
+  const credentialRateLimit = {
+    rateLimit: { max: opts.config.RATE_LIMIT_AUTH_MAX, timeWindow: RATE_LIMIT_TIME_WINDOW },
+  };
+  const refreshRateLimit = {
+    rateLimit: { max: opts.config.RATE_LIMIT_REFRESH_MAX, timeWindow: RATE_LIMIT_TIME_WINDOW },
+  };
+
   const signAccessToken = (user: User): string =>
     app.jwt.sign({ sub: user.id, role: user.role, username: user.username });
 
-  app.post('/register', async (request, reply) => {
+  app.post('/register', { config: credentialRateLimit }, async (request, reply) => {
     const body = parseBody(registerBodySchema, request.body, reply);
     if (body === undefined) return reply;
 
@@ -82,7 +92,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     return reply.status(201).send({ user: toAuthUser(user), accessToken: signAccessToken(user) });
   });
 
-  app.post('/login', async (request, reply) => {
+  app.post('/login', { config: credentialRateLimit }, async (request, reply) => {
     const body = parseBody(loginBodySchema, request.body, reply);
     if (body === undefined) return reply;
 
@@ -138,7 +148,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     return reply.send({ user: toAuthUser(loggedIn), accessToken: signAccessToken(loggedIn) });
   });
 
-  app.post('/refresh', async (request, reply) => {
+  app.post('/refresh', { config: refreshRateLimit }, async (request, reply) => {
     const token = request.cookies[REFRESH_COOKIE_NAME];
     if (token === undefined || token === '') {
       return sendError(reply, 401, 'UNAUTHORIZED', 'Missing refresh token');
