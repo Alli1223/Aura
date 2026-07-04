@@ -43,7 +43,8 @@ volumes:
 Then open `http://localhost:8096` — the first account you register becomes
 the admin. `/config` holds all server state (database, cache, transcodes);
 media mounts are read-only, and the container reports its own health via
-`/api/health`.
+`/api/health`. Database migrations run automatically on container start
+(`prisma migrate deploy`), so upgrades need no manual migration step.
 
 ## Development
 
