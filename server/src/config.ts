@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { z } from 'zod';
 
 export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -66,6 +68,42 @@ const envSchema = z
           origins.push(origin);
         }
         return origins;
+      }),
+    /**
+     * Comma-separated list of absolute directory paths under which all
+     * library folders must live (path-traversal defence: no library path is
+     * ever accepted outside these roots). The Docker image mounts host media
+     * under /media, hence the default.
+     */
+    MEDIA_ROOTS: z
+      .string()
+      .default('/media')
+      .transform((value, ctx) => {
+        const entries = value
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0);
+        const roots: string[] = [];
+        for (const entry of entries) {
+          if (!path.isAbsolute(entry)) {
+            ctx.addIssue({
+              code: 'custom',
+              message: `MEDIA_ROOTS entry "${entry}" must be an absolute path`,
+            });
+            continue;
+          }
+          // Normalise (collapse //, resolve ./.., strip trailing slash) so
+          // containment checks compare like with like.
+          const normalised = path.resolve(entry);
+          if (!roots.includes(normalised)) roots.push(normalised);
+        }
+        if (roots.length === 0) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'MEDIA_ROOTS must contain at least one absolute path',
+          });
+        }
+        return roots;
       }),
     /** Pino log level. Defaults to "info" ("warn" when NODE_ENV=test). */
     LOG_LEVEL: z.enum(LOG_LEVELS).optional(),
