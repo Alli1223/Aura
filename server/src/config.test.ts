@@ -75,3 +75,26 @@ describe('loadConfig hardening options', () => {
     expect(() => loadConfig({ RATE_LIMIT_AUTH_MAX: 'lots' })).toThrow(/Invalid environment/);
   });
 });
+
+describe('loadConfig MEDIA_ROOTS', () => {
+  it('defaults to /media', () => {
+    expect(loadConfig({}).MEDIA_ROOTS).toEqual(['/media']);
+  });
+
+  it('parses a comma-separated list, normalising and de-duplicating entries', () => {
+    const config = loadConfig({
+      MEDIA_ROOTS: ' /media , /mnt/storage/ , /media/../media , /mnt//storage ',
+    });
+
+    expect(config.MEDIA_ROOTS).toEqual(['/media', '/mnt/storage']);
+  });
+
+  it('rejects relative entries and empty lists', () => {
+    expect(() => loadConfig({ MEDIA_ROOTS: 'media' })).toThrow(/Invalid environment/);
+    expect(() => loadConfig({ MEDIA_ROOTS: '/media,relative/path' })).toThrow(
+      /Invalid environment/,
+    );
+    expect(() => loadConfig({ MEDIA_ROOTS: '' })).toThrow(/Invalid environment/);
+    expect(() => loadConfig({ MEDIA_ROOTS: ' , ' })).toThrow(/Invalid environment/);
+  });
+});
