@@ -97,4 +97,25 @@ jobs:
           curl -fsS http://localhost:8096/api/health | grep -q '"status":"ok"'
           curl -fsS http://localhost:8096/ | grep -qi '<!doctype html'
           test "$(docker exec aura id -u)" = "1000"
+          # The entrypoint must have run `prisma migrate deploy` before the
+          # server started: the SQLite db file exists in the /config volume.
+          docker exec aura ls /config/aura.db
+          docker logs aura 2>&1 | grep -q 'prisma migrate deploy'
           docker rm -f aura
+
+      - name: Migration failure fails fast (no server start)
+        run: |
+          set +e
+          timeout 60 docker run --name aura-badmigrate \
+            -e DATABASE_URL=file:/nonexistent-dir/x.db aura:ci
+          status=$?
+          set -e
+          echo "container exit status: $status"
+          docker logs aura-badmigrate
+          if [ "$status" -eq 0 ] || [ "$status" -eq 124 ]; then
+            echo "container must exit non-zero quickly when migration fails"
+            docker rm -f aura-badmigrate
+            exit 1
+          fi
+          docker logs aura-badmigrate 2>&1 | grep -q 'database migration failed'
+          docker rm -f aura-badmigrate

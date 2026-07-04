@@ -66,6 +66,7 @@ COPY --from=prod-deps --chown=aura:aura /app/node_modules ./node_modules
 COPY --chown=aura:aura package.json ./
 COPY --chown=aura:aura server/package.json server/package.json
 COPY --chown=aura:aura server/prisma server/prisma
+COPY --chown=aura:aura --chmod=755 docker/entrypoint.sh docker/entrypoint.sh
 COPY --from=build --chown=aura:aura /app/server/dist server/dist
 COPY --from=build --chown=aura:aura /app/web/dist web/dist
 
@@ -83,4 +84,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 USER aura
 
+# The entrypoint runs `prisma migrate deploy` and exits non-zero on failure
+# (fail fast — the server must never start against an unmigrated database),
+# then execs the CMD.
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["node", "server/dist/index.js"]
