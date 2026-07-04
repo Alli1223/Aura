@@ -22,7 +22,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **rbac-middleware** — Role/permission middleware: `admin` vs `user`, route guards, per-user library access enforcement helpers used by all media routes
 - [x] **user-management** — Admin API + audit: list/disable/enable/delete users, force password reset, change roles; users can change own password/profile
 - [x] **security-hardening** — Rate limiting (strict on auth), secure headers, CORS config, request validation (zod) on every route, structured logging with secret redaction, audit log for auth/admin events
-- [ ] **server-settings** — Persistent server settings store in `/config` (server name, transcode dir, registration open/closed toggle, base URL)
+- [x] **server-settings** — Persistent server settings store in `/config` (server name, transcode dir, registration open/closed toggle, base URL)
 
 ## Phase 2 — Libraries, Scanning & Metadata
 
