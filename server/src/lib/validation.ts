@@ -20,3 +20,25 @@ export function parseBody<T>(
   }
   return result.data;
 }
+
+/**
+ * Validates request path parameters against a zod schema. Same contract as
+ * parseBody: sends a 400 VALIDATION error and returns undefined on failure.
+ */
+export function parseParams<T>(
+  schema: ZodType<T>,
+  params: unknown,
+  reply: FastifyReply,
+): T | undefined {
+  const result = schema.safeParse(params);
+  if (!result.success) {
+    sendError(
+      reply,
+      400,
+      'VALIDATION',
+      result.error.issues[0]?.message ?? 'Invalid request parameters',
+    );
+    return undefined;
+  }
+  return result.data;
+}
