@@ -31,7 +31,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **fs-scanner** — Recursive scanner over library roots: discover video files (extension + ffprobe validation), store files with size/mtime, detect added/removed/changed files, manual scan trigger endpoint, scan status reporting
 - [ ] **filename-parser** — Parse movie `Title (Year)` patterns, TV `SxxEyy`/`1x02` patterns, anime absolute-episode numbering & release-group tags, cleanup of scene naming noise; unit-test heavy
 - [x] **ffprobe-analysis** — Extract container/codec/resolution/duration/bitrate/audio & subtitle streams per file; persist stream info for transcode decisions
-- [ ] **migrate-on-boot** — Container entrypoint runs `prisma migrate deploy` before starting the server (fail fast on migration errors); remove the fail-safe swallow in library seeding once boot order is guaranteed
+- [x] **migrate-on-boot** — Container entrypoint runs `prisma migrate deploy` before starting the server (fail fast on migration errors); remove the fail-safe swallow in library seeding once boot order is guaranteed
 - [ ] **metadata-tmdb** — TMDB agent for movies & TV (title match + year, cast, synopsis, ratings, genres, posters/backdrops); API key via settings; graceful offline fallback to filename metadata
 - [ ] **metadata-anime** — AniList agent for anime libraries (absolute episode mapping, romaji/english titles); fallback chain anime→TMDB→filename
 - [ ] **local-metadata** — Local NFO file + local artwork (`poster.jpg`, `folder.jpg`) support; takes priority over online agents when present
