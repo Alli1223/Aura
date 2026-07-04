@@ -19,6 +19,7 @@ import { sendError } from './lib/errors.js';
 import { loadOrCreateSecrets } from './lib/secrets.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
+import { settingsRoutes } from './routes/settings.js';
 import { userRoutes } from './routes/users.js';
 
 export interface BuildAppOptions {
@@ -177,6 +178,7 @@ export function buildApp(
 
   void app.register(healthRoutes, { prefix: '/api' });
   void app.register(authRoutes, { prefix: '/api/auth', config });
+  void app.register(settingsRoutes, { prefix: '/api/settings' });
   void app.register(userRoutes, { prefix: '/api/users' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {

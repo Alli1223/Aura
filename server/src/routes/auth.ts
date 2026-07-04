@@ -17,7 +17,8 @@ import { toAuthUser } from '../auth/types.js';
 import { RATE_LIMIT_TIME_WINDOW, type Config } from '../config.js';
 import { getPrisma } from '../db/client.js';
 import { writeAuditLog } from '../lib/audit.js';
-import { sendError } from '../lib/errors.js';
+import { ApiError, sendError } from '../lib/errors.js';
+import { getSetting } from '../lib/settings.js';
 import { parseBody } from '../lib/validation.js';
 
 export interface AuthRoutesOptions {
@@ -48,6 +49,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
     const body = parseBody(registerBodySchema, request.body, reply);
     if (body === undefined) return reply;
 
+    const registrationEnabled = await getSetting('registrationEnabled', request.log);
     const passwordHash = await hashPassword(body.password);
 
     let user: User;
@@ -56,6 +58,12 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (app, opt
       // registrations cannot both become admin.
       user = await prisma.$transaction(async (tx) => {
         const userCount = await tx.user.count();
+        // First-run exception: with zero users the toggle is ignored so the
+        // first admin can always be created. The check lives inside the
+        // transaction so it uses the same count as the admin-role decision.
+        if (userCount > 0 && !registrationEnabled) {
+          throw new ApiError(403, 'REGISTRATION_DISABLED', 'Registration is currently disabled');
+        }
         return tx.user.create({
           data: {
             username: body.username,
