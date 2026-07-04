@@ -26,6 +26,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The media analysis tests probe real fixture files generated with
+      # ffmpeg; ubuntu-latest runners do not ship it.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Lint
         run: npm run lint -w server
 
