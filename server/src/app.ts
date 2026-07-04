@@ -17,6 +17,7 @@ import { ACCESS_TOKEN_TTL } from './auth/types.js';
 import { loadConfig, RATE_LIMIT_TIME_WINDOW, type Config } from './config.js';
 import { sendError } from './lib/errors.js';
 import { loadOrCreateSecrets } from './lib/secrets.js';
+import { accessRoutes } from './routes/access.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { libraryRoutes } from './routes/libraries.js';
@@ -182,6 +183,9 @@ export function buildApp(
   void app.register(settingsRoutes, { prefix: '/api/settings' });
   void app.register(userRoutes, { prefix: '/api/users' });
   void app.register(libraryRoutes, { prefix: '/api/libraries', config });
+  // Access grant routes span /api/access, /api/users/:id/libraries and
+  // /api/libraries/:id/access, so the plugin registers on the /api prefix.
+  void app.register(accessRoutes, { prefix: '/api' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
