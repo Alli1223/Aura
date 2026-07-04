@@ -21,7 +21,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **auth-registration** — Open user registration (username/email/password, argon2id), first registered user becomes admin (first-run setup), login/logout, JWT access + rotating refresh tokens (httpOnly cookies)
 - [x] **rbac-middleware** — Role/permission middleware: `admin` vs `user`, route guards, per-user library access enforcement helpers used by all media routes
 - [ ] **user-management** — Admin API + audit: list/disable/enable/delete users, force password reset, change roles; users can change own password/profile
-- [ ] **security-hardening** — Rate limiting (strict on auth), secure headers, CORS config, request validation (zod) on every route, structured logging with secret redaction, audit log for auth/admin events
+- [x] **security-hardening** — Rate limiting (strict on auth), secure headers, CORS config, request validation (zod) on every route, structured logging with secret redaction, audit log for auth/admin events
 - [ ] **server-settings** — Persistent server settings store in `/config` (server name, transcode dir, registration open/closed toggle, base URL)
 
 ## Phase 2 — Libraries, Scanning & Metadata
