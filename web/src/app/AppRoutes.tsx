@@ -1,7 +1,6 @@
 import { Route, Routes } from 'react-router';
 
 import { AppShell } from '../components/AppShell';
-import { AdminPage } from '../pages/AdminPage';
 import { HomePage } from '../pages/HomePage';
 import { ItemDetailPage } from '../pages/ItemDetailPage';
 import { LibraryPage } from '../pages/LibraryPage';
@@ -10,6 +9,12 @@ import { NotFoundPage } from '../pages/NotFoundPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SearchPage } from '../pages/SearchPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { AdminAccessPage } from '../pages/admin/AdminAccessPage';
+import { AdminLayout } from '../pages/admin/AdminLayout';
+import { AdminLibrariesPage } from '../pages/admin/AdminLibrariesPage';
+import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage';
+import { AdminTasksPage } from '../pages/admin/AdminTasksPage';
+import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { BootGate } from '../routes/BootGate';
 import { PublicOnly } from '../routes/PublicOnly';
 import { RequireAdmin } from '../routes/RequireAdmin';
@@ -35,7 +40,13 @@ export function AppRoutes() {
             <Route path="search" element={<SearchPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route element={<RequireAdmin />}>
-              <Route path="admin" element={<AdminPage />} />
+              <Route path="admin" element={<AdminLayout />}>
+                <Route index element={<AdminUsersPage />} />
+                <Route path="libraries" element={<AdminLibrariesPage />} />
+                <Route path="access" element={<AdminAccessPage />} />
+                <Route path="settings" element={<AdminSettingsPage />} />
+                <Route path="tasks" element={<AdminTasksPage />} />
+              </Route>
             </Route>
             <Route path="*" element={<NotFoundPage />} />
           </Route>
