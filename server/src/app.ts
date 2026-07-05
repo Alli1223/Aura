@@ -52,6 +52,9 @@ const REDACT_PATHS = [
   'req.body.password',
   'body.password',
   '*.password',
+  'req.body.tmdbApiKey',
+  'body.tmdbApiKey',
+  '*.tmdbApiKey',
 ];
 
 type LoggerOption = FastifyServerOptions['logger'];

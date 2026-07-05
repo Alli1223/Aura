@@ -76,6 +76,7 @@ interface SettingsBody {
     registrationEnabled: boolean;
     baseUrl: string;
     transcodeDir: string;
+    tmdbApiKey: string;
   };
 }
 interface AuthBody {
@@ -136,6 +137,7 @@ describe('settings service', () => {
       registrationEnabled: true,
       baseUrl: '',
       transcodeDir: path.join(configDir, 'transcodes'),
+      tmdbApiKey: '',
     });
   });
 
@@ -267,6 +269,7 @@ describe('GET /api/settings', () => {
       registrationEnabled: true,
       baseUrl: '',
       transcodeDir: path.join(configDir, 'transcodes'),
+      tmdbApiKey: '',
     });
   });
 });
@@ -302,6 +305,7 @@ describe('PATCH /api/settings', () => {
       registrationEnabled: true,
       baseUrl: 'https://media.example.com',
       transcodeDir: '/tmp/aura-transcodes',
+      tmdbApiKey: '',
     });
 
     // Cache invalidation: no restart, the next read sees the new values.
@@ -327,6 +331,7 @@ describe('PATCH /api/settings', () => {
         registrationEnabled: true,
         baseUrl: 'https://media.example.com',
         transcodeDir: '/tmp/aura-transcodes',
+        tmdbApiKey: '',
       });
     } finally {
       await secondBoot.close();
@@ -357,6 +362,8 @@ describe('PATCH /api/settings', () => {
     ['a non-boolean registrationEnabled', { registrationEnabled: 'yes' }],
     ['a non-string transcodeDir', { transcodeDir: 42 }],
     ['an empty transcodeDir', { transcodeDir: '' }],
+    ['a non-string tmdbApiKey', { tmdbApiKey: 42 }],
+    ['an overlong tmdbApiKey', { tmdbApiKey: 'x'.repeat(513) }],
     ['an unknown key', { serverName: 'ok', accentColor: 'red' }],
     ['an empty patch', {}],
     ['a baseUrl with a trailing slash', { baseUrl: 'https://media.example.com/' }],
@@ -401,5 +408,43 @@ describe('GET /api/settings/public', () => {
     const response = await inject({ method: 'GET', url: '/api/settings/public' });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ serverName: 'Renamed', registrationEnabled: true });
+  });
+});
+
+describe('tmdbApiKey setting', () => {
+  it('PATCH stores the key (trimmed) and GET returns it to admins', async () => {
+    const response = await patchSettings({ tmdbApiKey: '  0123456789abcdef  ' }, adminToken);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<SettingsBody>().settings.tmdbApiKey).toBe('0123456789abcdef');
+    expect(await getSetting('tmdbApiKey')).toBe('0123456789abcdef');
+  });
+
+  it('never appears in GET /api/settings/public, even when set', async () => {
+    expect(await getSetting('tmdbApiKey')).not.toBe('');
+
+    const response = await inject({ method: 'GET', url: '/api/settings/public' });
+
+    expect(response.statusCode).toBe(200);
+    // Exact shape: the API key (and everything else non-public) must not leak.
+    expect(response.json()).toEqual({ serverName: 'Renamed', registrationEnabled: true });
+  });
+
+  it('redacts the key value in the settings.updated audit log entry', async () => {
+    const rows = await prisma.auditLog.findMany({ where: { action: 'settings.updated' } });
+    const details = rows.map((row) => JSON.parse(row.details ?? '{}') as { changed?: object });
+
+    expect(details).toContainEqual({ changed: { tmdbApiKey: '[REDACTED]' } });
+    // The raw key value must not appear anywhere in the audit log.
+    for (const row of rows) {
+      expect(row.details ?? '').not.toContain('0123456789abcdef');
+    }
+  });
+
+  it('accepts clearing the key back to ""', async () => {
+    const response = await patchSettings({ tmdbApiKey: '' }, adminToken);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<SettingsBody>().settings.tmdbApiKey).toBe('');
   });
 });
