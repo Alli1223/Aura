@@ -34,7 +34,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **migrate-on-boot** — Container entrypoint runs `prisma migrate deploy` before starting the server (fail fast on migration errors); remove the fail-safe swallow in library seeding once boot order is guaranteed
 - [x] **metadata-tmdb** — TMDB agent for movies & TV (title match + year, cast, synopsis, ratings, genres, posters/backdrops); API key via settings; graceful offline fallback to filename metadata
 - [x] **metadata-anime** — AniList agent for anime libraries (absolute episode mapping, romaji/english titles); fallback chain anime→TMDB→filename
-- [ ] **local-metadata** — Local NFO file + local artwork (`poster.jpg`, `folder.jpg`) support; takes priority over online agents when present
+- [x] **local-metadata** — Local NFO file + local artwork (`poster.jpg`, `folder.jpg`) support; takes priority over online agents when present
 - [x] **artwork-cache** — Download & cache posters/backdrops in `/config/cache`, image resize endpoint (thumbnail sizes), cache eviction
 - [ ] **artwork-cache-anilist** — Extend artwork-cache to resolve `anilist:<url>` URIs (written by the anime agent) by allowlisting the AniList CDN host `s4.anilist.co`; today it only fetches `image.tmdb.org`, so AniList posters/backdrops will not render until this lands
 - [x] **library-watcher** — Filesystem watching (chokidar) for near-realtime library updates + scheduled periodic rescans
