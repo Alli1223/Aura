@@ -29,7 +29,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **library-crud** — Admin CRUD for libraries with types (movies, tv, anime, recordings, other), each mapping to one or more folder paths; validation that paths exist inside `/media`; seed default five libraries
 - [x] **library-access-grants** — Admin assigns users to libraries (grant/revoke, list per user & per library); server-side enforcement on browse/detail/image/stream routes; new users have zero access by default
 - [ ] **fs-scanner** — Recursive scanner over library roots: discover video files (extension + ffprobe validation), store files with size/mtime, detect added/removed/changed files, manual scan trigger endpoint, scan status reporting
-- [ ] **filename-parser** — Parse movie `Title (Year)` patterns, TV `SxxEyy`/`1x02` patterns, anime absolute-episode numbering & release-group tags, cleanup of scene naming noise; unit-test heavy
+- [x] **filename-parser** — Parse movie `Title (Year)` patterns, TV `SxxEyy`/`1x02` patterns, anime absolute-episode numbering & release-group tags, cleanup of scene naming noise; unit-test heavy
 - [x] **ffprobe-analysis** — Extract container/codec/resolution/duration/bitrate/audio & subtitle streams per file; persist stream info for transcode decisions
 - [x] **migrate-on-boot** — Container entrypoint runs `prisma migrate deploy` before starting the server (fail fast on migration errors); remove the fail-safe swallow in library seeding once boot order is guaranteed
 - [ ] **metadata-tmdb** — TMDB agent for movies & TV (title match + year, cast, synopsis, ratings, genres, posters/backdrops); API key via settings; graceful offline fallback to filename metadata
@@ -40,7 +40,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 
 ## Phase 3 — Playback & Transcoding
 
-- [ ] **stream-tokens** — Short-lived signed streaming tokens so `<video>`/HLS requests are authenticated without exposing JWTs in URLs; per-user, per-media scope checks
+- [x] **stream-tokens** — Short-lived signed streaming tokens so `<video>`/HLS requests are authenticated without exposing JWTs in URLs; per-user, per-media scope checks
 - [ ] **direct-play** — Range-request file streaming endpoint with library-access + path-safety enforcement; content-type mapping
 - [ ] **playback-decision** — Decision engine: client reports capabilities, server picks direct play vs transcode (container remux vs full transcode) per video/audio stream
 - [ ] **hls-transcoder** — ffmpeg HLS session manager: spawn with arg-array only, segment output to per-session scratch dir, playlist generation, session keepalive/timeout, cleanup on stop/disconnect, concurrent session limits
