@@ -22,6 +22,7 @@ import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
+import { mediaRoutes } from './routes/media.js';
 import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
@@ -214,6 +215,9 @@ export function buildApp(
   // Watch-progress routes span /api/items/:id/{progress,watched,state},
   // /api/items/state and /api/continue-watching.
   void app.register(watchRoutes, { prefix: '/api' });
+  // Browse (read) API: /api/libraries/:id/{items,recently-added},
+  // /api/items/:id, /api/items/:id/children and /api/home/recently-added.
+  void app.register(mediaRoutes, { prefix: '/api' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
