@@ -26,6 +26,7 @@ import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
+import { subtitleRoutes } from './routes/subtitles.js';
 import { userRoutes } from './routes/users.js';
 import { watchRoutes } from './routes/watch.js';
 
@@ -199,6 +200,12 @@ export function buildApp(
   });
   // Per-user selectable quality rungs for the player's quality menu.
   void app.register(qualityRoutes, { prefix: '/api/qualities' });
+  // Subtitle listing + WebVTT serving, same prefix and token-auth as streamRoutes.
+  void app.register(subtitleRoutes, {
+    prefix: '/api/stream',
+    config,
+    streamTokenSecret: secrets.streamTokenSecret,
+  });
   // Access grant routes span /api/access, /api/users/:id/libraries and
   // /api/libraries/:id/access, so the plugin registers on the /api prefix.
   void app.register(accessRoutes, { prefix: '/api' });
