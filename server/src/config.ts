@@ -154,11 +154,35 @@ const envSchema = z
      * identical (file,user,quality) request reuses the live session instead.
      */
     HLS_MAX_SESSIONS: z.coerce.number().int().min(1).max(64).default(3),
+    /**
+     * Master switch for the filesystem library watcher (near-realtime rescans
+     * on media changes). Defaults to enabled, except under NODE_ENV=test where
+     * it defaults to disabled so the suite never spawns real chokidar watchers
+     * (watcher tests construct instances explicitly).
+     */
+    WATCH_ENABLED: z.stringbool().optional(),
+    /**
+     * Quiet period (ms) the watcher waits after the last filesystem event for
+     * a library before triggering a scan, coalescing a burst of add/remove
+     * events (e.g. a folder copy) into a single scan. Default 10s.
+     */
+    WATCH_DEBOUNCE_MS: z.coerce.number().int().min(0).max(600_000).default(10_000),
+    /**
+     * Interval (ms) between scheduled full rescans of every library. 0 (the
+     * effective floor) disables the periodic scheduler entirely. Default 6h.
+     */
+    SCAN_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(30 * 24 * 60 * 60 * 1000)
+      .default(6 * 60 * 60 * 1000),
   })
   .transform((env) => ({
     ...env,
     LOG_LEVEL: env.LOG_LEVEL ?? (env.NODE_ENV === 'test' ? ('warn' as const) : ('info' as const)),
     RATE_LIMIT_ENABLED: env.RATE_LIMIT_ENABLED ?? env.NODE_ENV !== 'test',
+    WATCH_ENABLED: env.WATCH_ENABLED ?? env.NODE_ENV !== 'test',
   }));
 
 export type Config = z.infer<typeof envSchema>;
