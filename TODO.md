@@ -39,6 +39,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **artwork-cache-anilist** — Extend artwork-cache to resolve `anilist:<url>` URIs (written by the anime agent) by allowlisting the AniList CDN host `s4.anilist.co`; today it only fetches `image.tmdb.org`, so AniList posters/backdrops will not render until this lands
 - [x] **library-watcher** — Filesystem watching (chokidar) for near-realtime library updates + scheduled periodic rescans
 - [ ] **watcher-crud-wiring** — Call `refreshLibraryWatcher()` from library create/update/delete routes so watchers track new/removed libraries immediately (today only the periodic scheduler picks them up)
+- [ ] **media-browse-api** — Read API the web app browses: `GET /api/libraries/:id/items` (paginated/sorted/filtered list with poster + watch-state overlays), `GET /api/items/:id` (movie detail, or show→seasons→episodes with files/streams/genres), recently-added & continue-watching feeds; all access-checked with the 404 cloak. Prerequisite for library-browse, media-detail, home-screen, search
 
 ## Phase 3 — Playback & Transcoding
 
