@@ -20,6 +20,7 @@ import {
   etagMatches,
   resolveRequestRange,
 } from '../streaming/direct-play.js';
+import { listAudioTracks, resolveAudioTrackIndex } from '../streaming/audio-tracks.js';
 import {
   HLS_PLAYLIST_NAME,
   HlsInputError,
@@ -355,6 +356,54 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     await assertMediaItemAccess(user, file.mediaItemId);
   };
 
+  /**
+   * Lists a media file's audio tracks for the player's mid-playback audio-track
+   * menu. Token-authed exactly like direct play: verify the token, require it
+   * scoped to this file, load the user fresh (deleted => 401, disabled => 403),
+   * then re-check library access at use time (404 enumeration cloak, byte-
+   * identical to a nonexistent id). Each track carries its AUDIO-RELATIVE index
+   * (the value the player sends back as `audioTrack`), codec, channels,
+   * language, default flag and a human-friendly label.
+   */
+  app.get('/audio/:mediaFileId', async (request, reply) => {
+    const { mediaFileId } = request.params as { mediaFileId: string };
+    const { claims, user } = await authenticateStreamToken(request);
+    if (claims.mediaFileId !== mediaFileId) throw tokenInvalidError();
+
+    const file = await prisma.mediaFile.findUnique({
+      where: { id: mediaFileId },
+      select: {
+        id: true,
+        mediaItemId: true,
+        streams: {
+          where: { type: 'audio' },
+          select: {
+            streamIndex: true,
+            codec: true,
+            language: true,
+            title: true,
+            channels: true,
+            isDefault: true,
+          },
+        },
+      },
+    });
+    if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
+    await assertMediaItemAccess(user, file.mediaItemId);
+
+    const tracks = listAudioTracks(
+      file.streams.map((stream) => ({
+        streamIndex: stream.streamIndex,
+        codec: stream.codec,
+        language: stream.language,
+        title: stream.title,
+        channels: stream.channels,
+        default: stream.isDefault,
+      })),
+    );
+    return reply.send({ mediaFileId, tracks });
+  });
+
   /** Only playlist and segment basenames — no path separators, no traversal. */
   const HLS_FILE_PATTERN = /^[a-zA-Z0-9_.-]+\.(m3u8|ts)$/;
 
@@ -373,6 +422,35 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
   }
 
   /**
+   * Optional audio-track selection for an HLS start, accepted on the query
+   * string or the JSON body (query wins). `audioTrack` is an audio-relative
+   * index (validated as a non-negative integer; out-of-range values fall back
+   * to the default track later). `downmixStereo` declares a stereo-only client
+   * ("true"/"false" or a real boolean). Unknown keys are ignored.
+   */
+  const audioSelectionSchema = z.object({
+    audioTrack: z.coerce.number().int().nonnegative().optional(),
+    downmixStereo: z
+      .union([z.boolean(), z.enum(['true', 'false'])])
+      .transform((value) => (typeof value === 'boolean' ? value : value === 'true'))
+      .optional(),
+  });
+
+  /** Parses audio selection from query/body; a malformed value is a 400. */
+  function parseAudioSelection(request: FastifyRequest): {
+    audioTrack: number | undefined;
+    downmixStereo: boolean | undefined;
+  } {
+    const query = typeof request.query === 'object' && request.query !== null ? request.query : {};
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    const parsed = audioSelectionSchema.safeParse({ ...body, ...query });
+    if (!parsed.success) {
+      throw new ApiError(400, 'VALIDATION', 'Invalid audio track selection');
+    }
+    return { audioTrack: parsed.data.audioTrack, downmixStereo: parsed.data.downmixStereo };
+  }
+
+  /**
    * Starts (or reuses) an HLS transcode session for a media file and returns
    * the playlist URL. Auth chain runs before any transcode work: token verify,
    * token-scoped-to-this-file, fresh user, file exists, library access.
@@ -383,6 +461,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     if (claims.mediaFileId !== mediaFileId) throw tokenInvalidError();
 
     const requestedQuality = parseRequestedQuality(request.query);
+    const { audioTrack: requestedAudioTrack, downmixStereo } = parseAudioSelection(request);
     // Resolve the requested rung (or the server default) and clamp it to the
     // user's effective cap — SERVER-SIDE, so a capped user who asks for a higher
     // rung is downgraded to the highest they are allowed. Never trust the client.
@@ -395,10 +474,42 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
 
     const file = await prisma.mediaFile.findUnique({
       where: { id: mediaFileId },
-      select: { id: true, mediaItemId: true, path: true },
+      select: {
+        id: true,
+        mediaItemId: true,
+        path: true,
+        streams: {
+          where: { type: 'audio' },
+          select: {
+            streamIndex: true,
+            codec: true,
+            language: true,
+            title: true,
+            channels: true,
+            isDefault: true,
+          },
+        },
+      },
     });
     if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
     await assertMediaItemAccess(user, file.mediaItemId);
+
+    // Resolve the requested audio-relative index against the file's actual audio
+    // tracks: an in-range integer is honoured; omitted/out-of-range falls back to
+    // the default (or first) track. The chosen track's channel count feeds the
+    // surround-preservation decision when the client is not stereo-only.
+    const audioTracks = listAudioTracks(
+      file.streams.map((stream) => ({
+        streamIndex: stream.streamIndex,
+        codec: stream.codec,
+        language: stream.language,
+        title: stream.title,
+        channels: stream.channels,
+        default: stream.isDefault,
+      })),
+    );
+    const audioTrackIndex = resolveAudioTrackIndex(audioTracks, requestedAudioTrack);
+    const selectedAudioChannels = audioTracks[audioTrackIndex]?.channels;
 
     let session;
     try {
@@ -406,6 +517,9 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
         mediaFile: { id: file.id, path: file.path },
         quality,
         userId: user.id,
+        audioTrackIndex,
+        downmixStereo,
+        audioChannels: selectedAudioChannels,
       });
     } catch (err) {
       if (err instanceof HlsInputError) {
@@ -435,8 +549,16 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
 
     const playlistUrl = `/api/stream/hls/${session.id}/${HLS_PLAYLIST_NAME}?token=${encodeURIComponent(token)}`;
     // Echo the granted quality so the UI reflects the actually-started rung
-    // (which may be lower than requested when the user is capped).
-    return reply.send({ sessionId: session.id, playlistUrl, quality: session.quality });
+    // (which may be lower than requested when the user is capped), plus the
+    // audio track that was actually selected (the resolved audio-relative index)
+    // and whether the audio was downmixed to stereo.
+    return reply.send({
+      sessionId: session.id,
+      playlistUrl,
+      quality: session.quality,
+      audioTrackIndex: session.audioTrackIndex,
+      downmixStereo: session.downmixStereo,
+    });
   });
 
   /**

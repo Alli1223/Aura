@@ -110,6 +110,84 @@ describe('buildHlsFfmpegArgs', () => {
     expect(audioMap).toBe('0:a:2?');
   });
 
+  /** The audio-relative index mapped by `-map 0:a:<n>?` (the last -map value). */
+  function audioMapOf(args: string[]): string | undefined {
+    return args[args.lastIndexOf('-map') + 1];
+  }
+
+  it('maps the selected audio-relative index (0:a:1)', () => {
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['480p'], audioStreamIndex: 1 });
+    expect(audioMapOf(args)).toBe('0:a:1?');
+  });
+
+  it('falls back to the first audio track for an omitted/invalid index', () => {
+    expect(audioMapOf(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['480p'] }))).toBe('0:a:0?');
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['480p'],
+        audioStreamIndex: bad,
+      });
+      expect(audioMapOf(args), String(bad)).toBe('0:a:0?');
+    }
+  });
+
+  it('downmixes to stereo (-ac 2) by default and when downmixStereo is true', () => {
+    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] }), '-ac')).toBe('2');
+    // Even a surround source is forced to stereo when the client is stereo-only.
+    const forced = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      downmixStereo: true,
+      sourceChannels: 6,
+    });
+    expect(valueAfter(forced, '-ac')).toBe('2');
+  });
+
+  it('preserves a surround source channel count when downmix is opted out', () => {
+    const surround = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      downmixStereo: false,
+      sourceChannels: 6,
+    });
+    expect(valueAfter(surround, '-ac')).toBe('6');
+  });
+
+  it('caps preserved surround channels at MAX_TRANSCODE_AUDIO_CHANNELS (6)', () => {
+    const eight = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      downmixStereo: false,
+      sourceChannels: 8,
+    });
+    expect(valueAfter(eight, '-ac')).toBe('6');
+  });
+
+  it('keeps the stereo baseline when opting out but the source is not surround', () => {
+    for (const channels of [undefined, 1, 2]) {
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        downmixStereo: false,
+        sourceChannels: channels,
+      });
+      expect(valueAfter(args, '-ac'), String(channels)).toBe('2');
+    }
+  });
+
+  it('never injects shell metacharacters via audio selection or downmix', () => {
+    const injection = /[;&|`$<>\n\r]/;
+    const args = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['1080p'],
+      audioStreamIndex: 3,
+      downmixStereo: false,
+      sourceChannels: 6,
+    });
+    for (const arg of args) expect(injection.test(arg), JSON.stringify(arg)).toBe(false);
+  });
+
   it('emits an EVENT HLS playlist with independent, appendable mpegts segments', () => {
     const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] });
     expect(valueAfter(args, '-f')).toBe('hls');
