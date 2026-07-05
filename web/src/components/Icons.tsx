@@ -137,6 +137,14 @@ export function ChevronDownIcon(props: IconProps) {
   );
 }
 
+export function CheckIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m5 12 5 5L20 7" />
+    </Svg>
+  );
+}
+
 /** Dispatches to the icon that matches a library type. */
 export function LibraryIcon({ type, ...props }: IconProps & { type: LibraryType }) {
   switch (type) {
