@@ -20,6 +20,7 @@ import { loadOrCreateSecrets } from './lib/secrets.js';
 import { accessRoutes } from './routes/access.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
+import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
 import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
@@ -188,6 +189,7 @@ export function buildApp(
   void app.register(settingsRoutes, { prefix: '/api/settings' });
   void app.register(userRoutes, { prefix: '/api/users' });
   void app.register(libraryRoutes, { prefix: '/api/libraries', config });
+  void app.register(imageRoutes, { prefix: '/api/items', config });
   void app.register(streamRoutes, {
     prefix: '/api/stream',
     config,
