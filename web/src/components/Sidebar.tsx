@@ -1,13 +1,15 @@
 import { NavLink } from 'react-router';
 
 import { useLibraries } from '../api/queries';
-import { HomeIcon, LibraryIcon } from './Icons';
+import { useAuth } from '../auth/context';
+import { AdminIcon, HomeIcon, LibraryIcon } from './Icons';
 import { Spinner } from './Spinner';
 import styles from './Sidebar.module.css';
 
 /** Left navigation: home + the user's permitted libraries. */
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const libraries = useLibraries();
+  const { isAdmin } = useAuth();
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? `${styles.link} ${styles.linkActive}` : styles.link;
@@ -52,6 +54,16 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </li>
           ))}
       </ul>
+
+      {isAdmin && (
+        <>
+          <div className={styles.sectionLabel}>Manage</div>
+          <NavLink to="/admin" className={linkClass} onClick={onNavigate}>
+            <AdminIcon />
+            <span>Admin</span>
+          </NavLink>
+        </>
+      )}
     </nav>
   );
 }

@@ -1,0 +1,455 @@
+/* Shared styles for the admin dashboard sections. */
+
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.tab {
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.tab:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.tabActive {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+/* ---- Section scaffolding ------------------------------------------------- */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.toolbarTitle {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+.toolbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.card {
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.cardTitle {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin-bottom: var(--space-4);
+}
+
+/* ---- Tables -------------------------------------------------------------- */
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.table th,
+.table td {
+  padding: 0.7rem 0.9rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.table th {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  background: var(--color-surface-2);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface-2);
+}
+
+.primaryCell {
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: normal;
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* ---- Inline form controls ------------------------------------------------ */
+
+.select {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+.btnSm {
+  padding: 0.35rem 0.6rem;
+  font-size: var(--font-size-xs);
+}
+
+.btnDanger {
+  color: #ffb3bd;
+  border-color: var(--color-danger-soft);
+}
+
+.btnDanger:hover {
+  background: var(--color-danger-soft);
+}
+
+/* Toggle switch (enabled state). */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.switchTrack {
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-3);
+  border: 1px solid var(--color-border-strong);
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.switchThumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.switch input:checked + .switchTrack {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.switch input:checked + .switchTrack .switchThumb {
+  transform: translateX(16px);
+  background: var(--color-on-accent);
+}
+
+.switch input:focus-visible + .switchTrack {
+  box-shadow: var(--focus-ring);
+}
+
+.switch input:disabled + .switchTrack {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---- Badges / pills ------------------------------------------------------ */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.badgeAdmin {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+}
+
+.badgeNeutral {
+  background: var(--color-surface-3);
+  color: var(--color-text-muted);
+}
+
+.badgeSuccess {
+  background: var(--color-success-soft);
+  color: #97e9c4;
+}
+
+.badgeDanger {
+  background: var(--color-danger-soft);
+  color: #ffb3bd;
+}
+
+.badgeWarn {
+  background: rgba(240, 180, 80, 0.16);
+  color: #f0c674;
+}
+
+/* ---- Access matrix ------------------------------------------------------- */
+
+.matrixUserCell {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-surface);
+}
+
+.table th.matrixLibHead {
+  text-align: center;
+  white-space: normal;
+  min-width: 92px;
+}
+
+.matrixCell {
+  text-align: center;
+}
+
+.matrixCheckbox {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.matrixCheckbox:disabled {
+  cursor: progress;
+}
+
+.matrixPending {
+  opacity: 0.5;
+}
+
+.cellError {
+  outline: 2px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- Libraries ----------------------------------------------------------- */
+
+.libGrid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.libCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.libHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.libName {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+}
+
+.pathList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.scanRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.scanStats {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* ---- Forms --------------------------------------------------------------- */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 620px;
+}
+
+.formRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pathRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.pathRow .input {
+  flex: 1;
+}
+
+.formActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}
+
+.inputRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.inputRow .input {
+  flex: 1;
+}
+
+/* ---- Dialog -------------------------------------------------------------- */
+
+.dialogScrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.dialog {
+  width: 100%;
+  max-width: 440px;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-menu);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialogTitle {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+.dialogBody {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.secretValue {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  user-select: all;
+  word-break: break-all;
+}
+
+/* ---- Misc state ---------------------------------------------------------- */
+
+.stateBlock {
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--color-text-muted);
+}

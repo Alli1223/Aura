@@ -1,5 +1,12 @@
 import { vi, type Mock } from 'vitest';
 
+import type {
+  AccessMatrix,
+  AdminSettings,
+  AdminUser,
+  ScanState,
+  TaskStatus,
+} from '../api/admin';
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
@@ -34,6 +41,54 @@ export function makeLibrary(name: string, type: LibraryType = 'movies'): Library
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
 }
+
+let adminUserCounter = 0;
+/** An admin-view user (== server toAuthUser, includes maxQuality). */
+export function makeAdminUser(overrides: Partial<AdminUser> = {}): AdminUser {
+  adminUserCounter += 1;
+  return {
+    id: overrides.id ?? `au-${adminUserCounter}`,
+    username: `user${adminUserCounter}`,
+    email: null,
+    role: 'user',
+    isEnabled: true,
+    mustChangePassword: false,
+    maxQuality: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastLoginAt: null,
+    ...overrides,
+  };
+}
+
+let taskCounter = 0;
+/** A scheduled-task status with idle defaults. */
+export function makeTask(overrides: Partial<TaskStatus> = {}): TaskStatus {
+  taskCounter += 1;
+  return {
+    id: overrides.id ?? `task-${taskCounter}`,
+    name: `Task ${taskCounter}`,
+    enabled: true,
+    intervalMs: 3_600_000,
+    state: 'idle',
+    lastRunAt: null,
+    lastDurationMs: null,
+    lastResult: null,
+    lastError: null,
+    nextRunAt: null,
+    runCount: 0,
+    ...overrides,
+  };
+}
+
+const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
+  serverName: 'Test Server',
+  registrationEnabled: true,
+  baseUrl: '',
+  transcodeDir: '/config/transcodes',
+  defaultQuality: '720p',
+  maxQuality: '1080p',
+  tmdbApiKey: '',
+};
 
 let itemCounter = 0;
 /** A serialized media item with sensible defaults; override any field. */
@@ -165,6 +220,18 @@ export interface MockApiConfig {
   password?: string;
   /** User returned by a successful login/register (defaults to the session). */
   authUser?: AuthUser;
+  /** Admin user list served by GET /users. */
+  adminUsers?: AdminUser[];
+  /** Access matrix served by GET /access. */
+  access?: AccessMatrix;
+  /** Server settings served by GET /settings (merged over defaults). */
+  settings?: Partial<AdminSettings>;
+  /** Scheduled tasks served by GET /tasks. */
+  tasks?: TaskStatus[];
+  /** Preset scan states keyed by library id. */
+  scans?: Record<string, ScanState>;
+  /** POST /tasks/:id/run returns 409 TASK_RUNNING for this task id. */
+  taskRunConflictId?: string;
 }
 
 export interface MockApi {
@@ -179,6 +246,11 @@ export interface MockApi {
     details: Record<string, ItemDetail>;
     password: string;
     authUser: AuthUser | null;
+    adminUsers: AdminUser[];
+    access: AccessMatrix;
+    settings: AdminSettings;
+    tasks: TaskStatus[];
+    scans: Record<string, ScanState>;
   };
 }
 
@@ -364,7 +436,13 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     details: config.details ?? {},
     password: config.password ?? 'current-pass-123',
     authUser: config.authUser ?? config.session ?? null,
+    adminUsers: config.adminUsers ?? [],
+    access: config.access ?? { users: [], libraries: [] },
+    settings: { ...DEFAULT_ADMIN_SETTINGS, ...config.settings },
+    tasks: config.tasks ?? [],
+    scans: config.scans ?? {},
   };
+  const conflictTaskId = config.taskRunConflictId;
 
   const handle = (
     url: string,
@@ -549,6 +627,234 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
         state.session = { ...state.session, mustChangePassword: false };
       }
       return { status: 204 };
+    }
+
+    // ---- Admin: users ------------------------------------------------------
+    if (path === '/api/users' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: { users: state.adminUsers } };
+    }
+
+    const userLibrariesMatch = /^\/api\/users\/([^/]+)\/libraries$/.exec(path);
+    if (userLibrariesMatch !== null && method === 'PUT') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const userId = decodeURIComponent(userLibrariesMatch[1] ?? '');
+      const requested = Array.isArray(body.libraryIds) ? (body.libraryIds as string[]) : [];
+      const sorted = [...new Set(requested)].sort();
+      const accessUser = state.access.users.find((entry) => entry.id === userId);
+      if (accessUser !== undefined) accessUser.libraryIds = sorted;
+      return { status: 200, body: { libraryIds: sorted } };
+    }
+
+    const userPasswordMatch = /^\/api\/users\/([^/]+)\/password$/.exec(path);
+    if (userPasswordMatch !== null && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      if (typeof body.newPassword !== 'string' || body.newPassword === '') {
+        return { status: 400, body: err('VALIDATION', 'newPassword is required') };
+      }
+      return { status: 204 };
+    }
+
+    const adminUserIdMatch = /^\/api\/users\/([^/]+)$/.exec(path);
+    if (adminUserIdMatch !== null && (method === 'PATCH' || method === 'DELETE')) {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const userId = decodeURIComponent(adminUserIdMatch[1] ?? '');
+      const target = state.adminUsers.find((entry) => entry.id === userId);
+      if (target === undefined) return { status: 404, body: err('NOT_FOUND', 'User not found') };
+      const enabledAdmins = state.adminUsers.filter(
+        (entry) => entry.role === 'admin' && entry.isEnabled,
+      ).length;
+
+      if (method === 'DELETE') {
+        if (target.role === 'admin' && target.isEnabled && enabledAdmins <= 1) {
+          return {
+            status: 409,
+            body: err('LAST_ADMIN', 'Cannot delete the last enabled administrator'),
+          };
+        }
+        if (state.session !== null && target.id === state.session.id) {
+          return {
+            status: 409,
+            body: err('CANNOT_DELETE_SELF', 'You cannot delete your own account'),
+          };
+        }
+        state.adminUsers = state.adminUsers.filter((entry) => entry.id !== userId);
+        return { status: 204 };
+      }
+
+      const demoting = body.role === 'user' && target.role === 'admin';
+      const disabling = body.isEnabled === false && target.isEnabled;
+      if (
+        (demoting || disabling) &&
+        target.role === 'admin' &&
+        target.isEnabled &&
+        enabledAdmins <= 1
+      ) {
+        return {
+          status: 409,
+          body: err(
+            'LAST_ADMIN',
+            `Cannot ${demoting ? 'demote' : 'disable'} the last enabled administrator`,
+          ),
+        };
+      }
+      if (typeof body.role === 'string') target.role = body.role as AdminUser['role'];
+      if (typeof body.isEnabled === 'boolean') target.isEnabled = body.isEnabled;
+      if ('email' in body) target.email = (body.email as string | null) ?? null;
+      if ('maxQuality' in body) {
+        target.maxQuality = (body.maxQuality as AdminUser['maxQuality']) ?? null;
+      }
+      return { status: 200, body: { user: target } };
+    }
+
+    // ---- Admin: libraries CRUD + scan -------------------------------------
+    if (path === '/api/libraries' && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      libraryCounter += 1;
+      const library: Library = {
+        id: `lib-new-${libraryCounter}`,
+        name: String(body.name ?? ''),
+        type: (body.type as LibraryType) ?? 'other',
+        paths: Array.isArray(body.paths) ? (body.paths as string[]) : [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      state.libraries = [...state.libraries, library];
+      return { status: 201, body: { library } };
+    }
+
+    const libScanMatch = /^\/api\/libraries\/([^/]+)\/scan$/.exec(path);
+    if (libScanMatch !== null && (method === 'POST' || method === 'GET')) {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const libraryId = decodeURIComponent(libScanMatch[1] ?? '');
+      if (!state.libraries.some((library) => library.id === libraryId)) {
+        return { status: 404, body: err('NOT_FOUND', 'Library not found') };
+      }
+      if (method === 'POST') {
+        if (state.scans[libraryId]?.status === 'scanning') {
+          return {
+            status: 409,
+            body: err('SCAN_IN_PROGRESS', 'A scan is already running for this library'),
+          };
+        }
+        state.scans[libraryId] = {
+          libraryId,
+          status: 'scanning',
+          startedAt: '2026-03-01T00:00:00.000Z',
+          finishedAt: null,
+          stats: null,
+          error: null,
+        };
+        return { status: 202, body: { started: true } };
+      }
+      const scan = state.scans[libraryId] ?? {
+        libraryId,
+        status: 'idle',
+        startedAt: null,
+        finishedAt: null,
+        stats: null,
+        error: null,
+      };
+      return { status: 200, body: { scan } };
+    }
+
+    const libAccessMatch = /^\/api\/libraries\/([^/]+)\/access$/.exec(path);
+    if (libAccessMatch !== null && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const libraryId = decodeURIComponent(libAccessMatch[1] ?? '');
+      const userId = String(body.userId ?? '');
+      const accessUser = state.access.users.find((entry) => entry.id === userId);
+      if (accessUser !== undefined && !accessUser.libraryIds.includes(libraryId)) {
+        accessUser.libraryIds = [...accessUser.libraryIds, libraryId].sort();
+      }
+      return { status: 204 };
+    }
+
+    const libAccessRevokeMatch = /^\/api\/libraries\/([^/]+)\/access\/([^/]+)$/.exec(path);
+    if (libAccessRevokeMatch !== null && method === 'DELETE') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const libraryId = decodeURIComponent(libAccessRevokeMatch[1] ?? '');
+      const userId = decodeURIComponent(libAccessRevokeMatch[2] ?? '');
+      const accessUser = state.access.users.find((entry) => entry.id === userId);
+      if (accessUser !== undefined) {
+        accessUser.libraryIds = accessUser.libraryIds.filter((id) => id !== libraryId);
+      }
+      return { status: 204 };
+    }
+
+    const libIdMatch = /^\/api\/libraries\/([^/]+)$/.exec(path);
+    if (libIdMatch !== null && (method === 'PATCH' || method === 'DELETE')) {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const libraryId = decodeURIComponent(libIdMatch[1] ?? '');
+      const existing = state.libraries.find((library) => library.id === libraryId);
+      if (existing === undefined) {
+        return { status: 404, body: err('NOT_FOUND', 'Library not found') };
+      }
+      if (method === 'DELETE') {
+        state.libraries = state.libraries.filter((library) => library.id !== libraryId);
+        return { status: 204 };
+      }
+      if (typeof body.name === 'string') existing.name = body.name;
+      if (Array.isArray(body.paths)) existing.paths = body.paths as string[];
+      existing.updatedAt = '2026-04-01T00:00:00.000Z';
+      return { status: 200, body: { library: existing } };
+    }
+
+    if (path === '/api/scan' && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const results = state.libraries.map((library) => {
+        const already = state.scans[library.id]?.status === 'scanning';
+        if (!already) {
+          state.scans[library.id] = {
+            libraryId: library.id,
+            status: 'scanning',
+            startedAt: '2026-03-01T00:00:00.000Z',
+            finishedAt: null,
+            stats: null,
+            error: null,
+          };
+        }
+        return { libraryId: library.id, name: library.name, started: !already };
+      });
+      return { status: 202, body: { libraries: results } };
+    }
+
+    // ---- Admin: access matrix ---------------------------------------------
+    if (path === '/api/access' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: state.access };
+    }
+
+    // ---- Admin: settings ---------------------------------------------------
+    if (path === '/api/settings' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: { settings: state.settings } };
+    }
+    if (path === '/api/settings' && method === 'PATCH') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      state.settings = { ...state.settings, ...(body as Partial<AdminSettings>) };
+      if (typeof body.serverName === 'string') state.publicSettings.serverName = body.serverName;
+      if (typeof body.registrationEnabled === 'boolean') {
+        state.publicSettings.registrationEnabled = body.registrationEnabled;
+      }
+      return { status: 200, body: { settings: state.settings } };
+    }
+
+    // ---- Admin: tasks ------------------------------------------------------
+    if (path === '/api/tasks' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: { tasks: state.tasks } };
+    }
+    const taskRunMatch = /^\/api\/tasks\/([^/]+)\/run$/.exec(path);
+    if (taskRunMatch !== null && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const taskId = decodeURIComponent(taskRunMatch[1] ?? '');
+      const task = state.tasks.find((entry) => entry.id === taskId);
+      if (task === undefined) return { status: 404, body: err('NOT_FOUND', 'Unknown task') };
+      if (taskId === conflictTaskId || task.state === 'running') {
+        return { status: 409, body: err('TASK_RUNNING', 'Task is already running') };
+      }
+      return { status: 202, body: { started: true, taskId } };
     }
 
     return { status: 404, body: err('NOT_FOUND', `No mock for ${method} ${path}`) };
