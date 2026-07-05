@@ -28,6 +28,7 @@ import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
 import { subtitleRoutes } from './routes/subtitles.js';
+import { tasksRoutes } from './routes/tasks.js';
 import { userRoutes } from './routes/users.js';
 import { watchRoutes } from './routes/watch.js';
 
@@ -218,6 +219,8 @@ export function buildApp(
   // Browse (read) API: /api/libraries/:id/{items,recently-added},
   // /api/items/:id, /api/items/:id/children and /api/home/recently-added.
   void app.register(mediaRoutes, { prefix: '/api' });
+  // Admin scheduled-task status + manual trigger API.
+  void app.register(tasksRoutes, { prefix: '/api/tasks' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
