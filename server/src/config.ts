@@ -137,6 +137,23 @@ const envSchema = z
       .min(1_000)
       .max(7 * 24 * 60 * 60 * 1000)
       .default(DEFAULT_STREAM_TOKEN_TTL_MS),
+    /**
+     * How long an HLS transcode session may sit with no playlist/segment
+     * request before the idle reaper kills its ffmpeg and deletes its scratch
+     * dir. Default 60s; bounded at one second below and a day above.
+     */
+    HLS_SESSION_IDLE_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(24 * 60 * 60 * 1000)
+      .default(60_000),
+    /**
+     * Maximum number of concurrent HLS transcode sessions. Requests beyond
+     * this cap are rejected (503) rather than starting another ffmpeg; an
+     * identical (file,user,quality) request reuses the live session instead.
+     */
+    HLS_MAX_SESSIONS: z.coerce.number().int().min(1).max(64).default(3),
   })
   .transform((env) => ({
     ...env,

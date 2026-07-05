@@ -1,15 +1,17 @@
 import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { assertMediaItemAccess, ITEM_NOT_FOUND_MESSAGE } from '../auth/access.js';
-import { toAuthUser } from '../auth/types.js';
+import { toAuthUser, type AuthUser } from '../auth/types.js';
 import type { Config } from '../config.js';
 import { getPrisma } from '../db/client.js';
 import { ApiError, notFoundError, sendError } from '../lib/errors.js';
-import { resolveMediaFileForServing } from '../lib/media-roots.js';
+import { isPathWithin, resolveMediaFileForServing } from '../lib/media-roots.js';
+import { getSetting } from '../lib/settings.js';
 import { parseBody } from '../lib/validation.js';
 import {
   computeEtag,
@@ -18,7 +20,15 @@ import {
   etagMatches,
   resolveRequestRange,
 } from '../streaming/direct-play.js';
-import { issueStreamToken, verifyStreamToken } from '../streaming/stream-tokens.js';
+import {
+  HLS_PLAYLIST_NAME,
+  HlsInputError,
+  HlsSessionManager,
+  isHlsQualityName,
+  TooManySessionsError,
+  type HlsQualityName,
+} from '../streaming/hls-session.js';
+import { type StreamTokenClaims, issueStreamToken, verifyStreamToken } from '../streaming/stream-tokens.js';
 
 export interface StreamRoutesOptions {
   config: Config;
@@ -199,5 +209,193 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     method: ['GET', 'HEAD'],
     url: '/direct/:mediaFileId',
     handler: handleDirectPlay,
+  });
+
+  // -------------------------------------------------------------------------
+  // HLS transcoding
+  // -------------------------------------------------------------------------
+
+  // One session manager for the server lifetime. Killed on server shutdown so
+  // no ffmpeg process or scratch dir leaks.
+  const hls = new HlsSessionManager({
+    mediaRoots: opts.config.MEDIA_ROOTS,
+    getTranscodeDir: () => getSetting('transcodeDir', app.log),
+    ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
+    idleMs: opts.config.HLS_SESSION_IDLE_MS,
+    maxSessions: opts.config.HLS_MAX_SESSIONS,
+    logger: app.log,
+  });
+  app.addHook('onClose', async () => {
+    await hls.shutdown();
+  });
+
+  /**
+   * Shared front half of the HLS auth chain, identical in spirit to direct
+   * play: verify the token signature/expiry, then load the token's user fresh
+   * (deleted => 401, disabled => 403). Library access is re-checked per route
+   * at use time (statelessness contract in streaming/stream-tokens.ts).
+   */
+  const authenticateStreamToken = async (
+    request: FastifyRequest,
+  ): Promise<{ claims: StreamTokenClaims; user: AuthUser; token: string }> => {
+    const token = extractStreamToken(request.query);
+    if (token === undefined) throw tokenInvalidError();
+    const verification = verifyStreamToken(token, opts.streamTokenSecret);
+    if (!verification.ok) throw tokenInvalidError();
+
+    const userRow = await prisma.user.findUnique({ where: { id: verification.claims.userId } });
+    if (userRow === null) throw tokenInvalidError();
+    if (!userRow.isEnabled) throw new ApiError(403, 'ACCOUNT_DISABLED', 'This account is disabled');
+    return { claims: verification.claims, user: toAuthUser(userRow), token };
+  };
+
+  /** Re-checks the media file exists and the user still has access (use-time). */
+  const assertFileAccess = async (user: AuthUser, mediaFileId: string): Promise<void> => {
+    const file = await prisma.mediaFile.findUnique({
+      where: { id: mediaFileId },
+      select: { mediaItemId: true },
+    });
+    if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
+    await assertMediaItemAccess(user, file.mediaItemId);
+  };
+
+  /** Only playlist and segment basenames — no path separators, no traversal. */
+  const HLS_FILE_PATTERN = /^[a-zA-Z0-9_.-]+\.(m3u8|ts)$/;
+
+  function parseQuality(query: unknown): HlsQualityName {
+    const raw = (query as Record<string, unknown> | null)?.quality;
+    if (raw === undefined) return '720p';
+    if (typeof raw !== 'string' || !isHlsQualityName(raw)) {
+      throw new ApiError(400, 'VALIDATION', 'Unsupported quality');
+    }
+    return raw;
+  }
+
+  /**
+   * Starts (or reuses) an HLS transcode session for a media file and returns
+   * the playlist URL. Auth chain runs before any transcode work: token verify,
+   * token-scoped-to-this-file, fresh user, file exists, library access.
+   */
+  app.post('/hls/:mediaFileId', async (request, reply) => {
+    const { mediaFileId } = request.params as { mediaFileId: string };
+    const { claims, user, token } = await authenticateStreamToken(request);
+    if (claims.mediaFileId !== mediaFileId) throw tokenInvalidError();
+
+    const quality = parseQuality(request.query);
+
+    const file = await prisma.mediaFile.findUnique({
+      where: { id: mediaFileId },
+      select: { id: true, mediaItemId: true, path: true },
+    });
+    if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
+    await assertMediaItemAccess(user, file.mediaItemId);
+
+    let session;
+    try {
+      session = await hls.startSession({
+        mediaFile: { id: file.id, path: file.path },
+        quality,
+        userId: user.id,
+      });
+    } catch (err) {
+      if (err instanceof HlsInputError) {
+        if (err.reason === 'missing') {
+          try {
+            await prisma.mediaFile.update({ where: { id: file.id }, data: { status: 'missing' } });
+          } catch (updateErr) {
+            request.log.debug({ err: updateErr, mediaFileId: file.id }, 'could not mark missing');
+          }
+        }
+        throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
+      }
+      if (err instanceof TooManySessionsError) {
+        // Sent directly (not thrown): the global handler collapses every 5xx to
+        // a generic INTERNAL body, but this is an expected, retryable condition
+        // the client should be told about explicitly.
+        return sendError(
+          reply,
+          503,
+          'TOO_MANY_SESSIONS',
+          'The server is at its transcoding session limit; please try again shortly',
+        );
+      }
+      request.log.error({ err, mediaFileId }, 'HLS transcode failed to start');
+      throw new ApiError(500, 'TRANSCODE_FAILED', 'Failed to start transcoding this media');
+    }
+
+    const playlistUrl = `/api/stream/hls/${session.id}/${HLS_PLAYLIST_NAME}?token=${encodeURIComponent(token)}`;
+    return reply.send({ sessionId: session.id, playlistUrl });
+  });
+
+  /**
+   * Serves a session's playlist (.m3u8) or a segment (.ts). Token-authed; the
+   * session must exist and belong to the token's user AND media file, and the
+   * user's library access is re-checked at use time. The filename is validated
+   * against a strict allowlist and its resolved path is asserted to stay inside
+   * the session dir (defence in depth against traversal).
+   */
+  app.get('/hls/:sessionId/:file', async (request, reply) => {
+    const { sessionId, file } = request.params as { sessionId: string; file: string };
+    const { claims, user } = await authenticateStreamToken(request);
+
+    // A bad filename never becomes a filesystem read — reject before any I/O.
+    if (!HLS_FILE_PATTERN.test(file)) throw notFoundError('Not found');
+
+    const session = hls.getSession(sessionId);
+    if (
+      session === undefined ||
+      session.userId !== claims.userId ||
+      session.mediaFileId !== claims.mediaFileId
+    ) {
+      // Uniform 404 for unknown / not-yours / wrong-file: reveals nothing.
+      throw notFoundError('Not found');
+    }
+
+    await assertFileAccess(user, session.mediaFileId);
+
+    const resolved = path.resolve(session.outputDir, file);
+    if (!isPathWithin(resolved, path.resolve(session.outputDir))) {
+      throw notFoundError('Not found');
+    }
+
+    let stats;
+    try {
+      stats = await stat(resolved);
+    } catch {
+      throw notFoundError('Not found');
+    }
+    if (!stats.isFile()) throw notFoundError('Not found');
+
+    hls.touch(sessionId);
+
+    const isPlaylist = file.endsWith('.m3u8');
+    void reply.header('content-type', isPlaylist ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
+    // The playlist grows while transcoding, so it must never be cached; a
+    // segment's bytes never change for the session's lifetime.
+    void reply.header('cache-control', isPlaylist ? 'no-store' : 'public, max-age=31536000, immutable');
+    void reply.header('content-length', stats.size);
+
+    if (request.method === 'HEAD') return reply.send();
+
+    const stream = createReadStream(resolved);
+    stream.on('error', (err) => {
+      request.log.debug({ err, sessionId }, 'hls file stream error');
+    });
+    return reply.send(stream);
+  });
+
+  /**
+   * Stops a session (owner only). Idempotent: an unknown session, or a session
+   * owned by someone else, still returns 204 and leaks nothing.
+   */
+  app.delete('/hls/:sessionId', async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    const { claims } = await authenticateStreamToken(request);
+
+    const session = hls.getSession(sessionId);
+    if (session !== undefined && session.userId === claims.userId) {
+      await hls.stopSession(sessionId);
+    }
+    return reply.code(204).send();
   });
 };
