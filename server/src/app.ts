@@ -21,6 +21,7 @@ import { accessRoutes } from './routes/access.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { libraryRoutes } from './routes/libraries.js';
+import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
 import { userRoutes } from './routes/users.js';
@@ -195,6 +196,8 @@ export function buildApp(
   // Access grant routes span /api/access, /api/users/:id/libraries and
   // /api/libraries/:id/access, so the plugin registers on the /api prefix.
   void app.register(accessRoutes, { prefix: '/api' });
+  // Scan routes span /api/libraries/:id/scan and /api/scan.
+  void app.register(scanRoutes, { prefix: '/api', config });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
