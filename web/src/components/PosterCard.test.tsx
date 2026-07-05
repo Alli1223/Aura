@@ -11,11 +11,7 @@ import { PosterCard } from './PosterCard';
 function stubArtworkFetch(ok = true) {
   const fetchMock = vi.fn(() =>
     ok
-      ? Promise.resolve(
-          new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), {
-            status: 200,
-          }),
-        )
+      ? Promise.resolve(new Response(new Uint8Array([1, 2, 3]), { status: 200 }))
       : Promise.resolve(new Response(null, { status: 404 })),
   );
   vi.stubGlobal('fetch', fetchMock);

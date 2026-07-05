@@ -261,8 +261,11 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
           }),
         );
       }
+      // Uint8Array body (not a Blob): a Blob constructed in the test realm is
+      // rejected by the fetch Response in some Node versions, throwing on
+      // construction. A typed-array body is portable and still yields .blob().
       return Promise.resolve(
-        new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), {
+        new Response(new Uint8Array([1, 2, 3]), {
           status: 200,
           headers: { 'Content-Type': 'image/webp' },
         }),

@@ -123,7 +123,8 @@ describe('apiRequest', () => {
 });
 
 function imageResponse(status = 200): Response {
-  return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), { status });
+  // Typed-array body (not a Blob) for portable Response construction in CI.
+  return new Response(new Uint8Array([1, 2, 3]), { status });
 }
 
 describe('fetchAuthedObjectUrl', () => {
