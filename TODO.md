@@ -50,7 +50,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **subtitles** — Extract embedded subtitle tracks, discover external .srt/.ass, convert to WebVTT for web playback, burn-in path for image-based subs (PGS/VOBSUB)
 - [ ] **audio-tracks** — Audio track listing & selection (transcode remaps chosen track), channel downmix for stereo clients
 - [ ] **hw-accel** — Optional hardware acceleration (VAAPI/NVENC/QSV) via settings + compose device passthrough docs; automatic software fallback
-- [ ] **watch-progress** — Playback progress reporting endpoint, resume positions, watched/unwatched state, per-user (writes gated by library access)
+- [x] **watch-progress** — Playback progress reporting endpoint, resume positions, watched/unwatched state, per-user (writes gated by library access)
 
 ## Phase 4 — Web App
 
