@@ -77,7 +77,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **multi-version** — Multiple files per movie (1080p/4K/Director's Cut): grouping, version picker in player
 - [ ] **parental-controls** — Content-rating restrictions per user (e.g. max PG-13), enforced server-side alongside library grants
 - [ ] **watch-history** — Full per-user watch history page + admin server-wide stats (most watched, storage per library)
-- [ ] **scheduled-tasks** — Task scheduler: periodic scans, cache/transcode cleanup, DB backup to `/config/backups`; admin task status UI
+- [x] **scheduled-tasks** — Task scheduler: periodic scans, cache/transcode cleanup, DB backup to `/config/backups`; admin task status UI
 - [ ] **notifications-webhooks** — Webhooks on events (media added, playback started) + in-app "new media" indicators
 - [ ] **api-tokens** — Personal API tokens for third-party clients/scripts, scoped read-only vs full, revocable; OpenAPI spec published at `/api/docs`
 - [ ] **logs-viewer** — Admin log viewer with level filtering + download
