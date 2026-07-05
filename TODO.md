@@ -63,7 +63,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **media-detail** — Movie detail page & show → seasons → episodes pages: artwork, synopsis, cast, stream/file info, play/resume buttons, mark (un)watched
 - [ ] **video-player** — hls.js player with custom controls: play/pause/seek/volume, quality selector, subtitle & audio track menus, fullscreen, keyboard shortcuts, auto-resume prompt, next-episode autoplay, progress reporting
 - [x] **home-screen** — Home: Continue Watching, Recently Added per permitted library, On Deck (next unwatched episode)
-- [ ] **search** — Server search endpoint + UI (title/people/genre) scoped to permitted libraries; instant results dropdown + full results page
+- [x] **search** — Server search endpoint + UI (title/people/genre) scoped to permitted libraries; instant results dropdown + full results page
 - [ ] **admin-dashboard** — Admin area: user management UI, library management UI, **library access grant matrix (user × library)**, server settings, scan triggers & status
 - [ ] **activity-dashboard** — Admin view of active playback/transcode sessions (who/what/bandwidth/transcode reason) with kill-session action
 - [ ] **user-settings** — Profile page: change password, playback preferences (default quality, subtitle language, autoplay)
