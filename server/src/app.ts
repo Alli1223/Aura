@@ -28,6 +28,7 @@ import { libraryRoutes } from './routes/libraries.js';
 import { mediaRoutes } from './routes/media.js';
 import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
+import { searchRoutes } from './routes/search.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
 import { subtitleRoutes } from './routes/subtitles.js';
@@ -287,6 +288,8 @@ export function buildApp(
   // Browse (read) API: /api/libraries/:id/{items,recently-added},
   // /api/items/:id, /api/items/:id/children and /api/home/recently-added.
   void app.register(mediaRoutes, { prefix: '/api' });
+  // Search API: /api/search (access-scoped title/genre search).
+  void app.register(searchRoutes, { prefix: '/api' });
   // Admin scheduled-task status + manual trigger API.
   void app.register(tasksRoutes, { prefix: '/api/tasks' });
 

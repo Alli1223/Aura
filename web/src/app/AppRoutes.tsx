@@ -8,6 +8,7 @@ import { LibraryPage } from '../pages/LibraryPage';
 import { LoginPage } from '../pages/LoginPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
 import { RegisterPage } from '../pages/RegisterPage';
+import { SearchPage } from '../pages/SearchPage';
 import { SettingsPage } from '../pages/SettingsPage';
 import { BootGate } from '../routes/BootGate';
 import { PublicOnly } from '../routes/PublicOnly';
@@ -31,6 +32,7 @@ export function AppRoutes() {
             <Route index element={<HomePage />} />
             <Route path="library/:id" element={<LibraryPage />} />
             <Route path="items/:id" element={<ItemDetailPage />} />
+            <Route path="search" element={<SearchPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route element={<RequireAdmin />}>
               <Route path="admin" element={<AdminPage />} />

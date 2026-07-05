@@ -485,6 +485,78 @@ export async function listLibraryItems(
   };
 }
 
+/**
+ * How many matching rows the search scan pulls before the in-memory rerank. The
+ * DB coarse-orders by rating/recency and caps here; the rerank then floats
+ * exact/prefix title matches to the top of that window. Comfortably above the
+ * route's max limit (50) so the returned page is drawn from a real candidate set.
+ */
+const SEARCH_SCAN_CAP = 200;
+
+/**
+ * Match tier for the title rerank (lower = better): an exact title, then a
+ * title prefix, then a title substring, then a row that only matched on
+ * sortTitle or a genre name. Comparison is case-insensitive; `needle` is already
+ * lower-cased by the caller.
+ */
+function titleMatchRank(title: string, needle: string): number {
+  const lower = title.toLowerCase();
+  if (lower === needle) return 0;
+  if (lower.startsWith(needle)) return 1;
+  if (lower.includes(needle)) return 2;
+  return 3;
+}
+
+/**
+ * Substring/prefix search across the given libraries' top-level items (movies
+ * and shows — never seasons/episodes; an episode surfaces via its parent show).
+ * Matches title, sortTitle and genre name case-insensitively, then ranks exact
+ * title matches above prefixes above other substring matches, breaking ties by
+ * communityRating then recency, and caps the result to `limit`.
+ *
+ * Access is enforced by the caller passing only the user's accessible library
+ * ids (as with the home feeds); this service never widens that set, so an item
+ * in an ungranted library can never appear — even on an exact title match.
+ */
+export async function searchLibraryItems(
+  userId: string,
+  libraryIds: readonly string[],
+  rawQuery: string,
+  limit: number,
+): Promise<SerializedItem[]> {
+  const query = rawQuery.trim();
+  if (query === '' || libraryIds.length === 0) return [];
+
+  const rows = await getPrisma().mediaItem.findMany({
+    where: {
+      libraryId: { in: [...libraryIds] },
+      parentId: null,
+      type: { in: [...TOP_LEVEL_TYPES] },
+      OR: [
+        { title: { contains: query } },
+        { sortTitle: { contains: query } },
+        { genres: { some: { name: { contains: query } } } },
+      ],
+    },
+    // Coarse order (nulls last for DESC in SQLite): the rerank below keeps this
+    // rating/recency order within each match tier via a stable sort.
+    orderBy: [{ communityRating: 'desc' }, { addedAt: 'desc' }, { id: 'asc' }],
+    take: SEARCH_SCAN_CAP,
+    include: GENRES_INCLUDE,
+  });
+
+  const needle = query.toLowerCase();
+  const ranked = rows
+    .map((row, index) => ({ row, index, rank: titleMatchRank(row.title, needle) }))
+    // Stable within a tier: the `index` tiebreak preserves the DB rating/recency
+    // order even where the engine's sort stability is not guaranteed.
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .slice(0, limit)
+    .map((entry) => entry.row);
+
+  return serializeItems(userId, ranked);
+}
+
 /** Most-recently-added top-level items in one library (addedAt desc). */
 export async function getLibraryRecentlyAdded(
   userId: string,
