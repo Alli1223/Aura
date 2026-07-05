@@ -219,6 +219,23 @@ describe('GET /api/items/:id/artwork/:kind delivery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1); // disk cache hit on the second call
   });
 
+  it('serves a resized webp poster for an item whose posterPath is an anilist: URI', async () => {
+    const user = await registerUser();
+    const { libraryId, itemId } = await createItem({
+      posterPath: 'anilist:https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1.png',
+    });
+    await grantAccess(user.id, libraryId);
+
+    const response = await getArtwork(itemId, 'poster', { size: 'w400', accessToken: user.accessToken });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('image/webp');
+    const meta = await sharp(response.rawPayload).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.width).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('lets an admin fetch artwork without an explicit grant', async () => {
     const { itemId } = await createItem();
     const response = await getArtwork(itemId, 'backdrop', { accessToken: admin.accessToken });

@@ -194,6 +194,112 @@ describe('resolveArtwork tmdb sources', () => {
   });
 });
 
+describe('resolveArtwork anilist sources', () => {
+  // A real AniList CDN cover URL, exactly as the anime enricher stores it.
+  const ANILIST_URL =
+    'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1.png';
+  const ANILIST_URI = `anilist:${ANILIST_URL}`;
+
+  it('fetches once, resizes to the bucket width as webp, then serves from cache', async () => {
+    const png = await pngBuffer(1000, 1500);
+    const fetchImpl = stubbedFetch(imageResponse(png));
+
+    const first = await resolveArtwork(ANILIST_URI, 'w400', options(fetchImpl));
+    expect(first.contentType).toBe('image/webp');
+    expect(first.filePath.endsWith('.webp')).toBe(true);
+
+    const meta = await sharp(await readFile(first.filePath)).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.width).toBe(400); // resized down to the bucket width
+
+    // Second call is a cache hit: same file, no extra fetch.
+    const second = await resolveArtwork(ANILIST_URI, 'w400', options(fetchImpl));
+    expect(second.filePath).toBe(first.filePath);
+    expect(second.cacheKey).toBe(first.cacheKey);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches the exact AniList CDN URL carried by the URI (full-URL convention)', async () => {
+    const response = imageResponse(await pngBuffer(500, 750));
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(response.clone()),
+    );
+    await resolveArtwork(ANILIST_URI, 'w400', options(fetchImpl as unknown as typeof fetch));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe(ANILIST_URL);
+  });
+
+  it('passes the original bytes through untouched for size=original', async () => {
+    const png = await pngBuffer(640, 480);
+    const fetchImpl = stubbedFetch(imageResponse(png));
+
+    const resolved = await resolveArtwork(ANILIST_URI, 'original', options(fetchImpl));
+    expect(resolved.contentType).toBe('image/png');
+    expect(resolved.filePath.endsWith('.png')).toBe(true);
+    expect(await readFile(resolved.filePath)).toEqual(png); // byte-exact passthrough
+  });
+
+  it('never upscales: a source smaller than the bucket keeps its size', async () => {
+    const png = await pngBuffer(120, 180);
+    const fetchImpl = stubbedFetch(imageResponse(png));
+
+    const resolved = await resolveArtwork(ANILIST_URI, 'w800', options(fetchImpl));
+    const meta = await sharp(await readFile(resolved.filePath)).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.width).toBe(120); // unchanged — withoutEnlargement
+  });
+
+  it('deduplicates concurrent requests for the same key into one fetch', async () => {
+    const png = await pngBuffer(1000, 1500);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return imageResponse(png);
+    }) as unknown as typeof fetch;
+
+    const opts = options(fetchImpl);
+    const a = resolveArtwork(ANILIST_URI, 'w400', opts);
+    const b = resolveArtwork(ANILIST_URI, 'w400', opts);
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+
+    expect(ra.filePath).toBe(rb.filePath);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // single in-flight fetch shared
+  });
+
+  it('refuses any URL outside the AniList CDN allowlist before any fetch (no SSRF)', async () => {
+    const fetchImpl = stubbedFetch(imageResponse(await pngBuffer(10, 10)));
+    const disallowed = [
+      'anilist:https://evil.example/x.jpg', // host not on the allowlist
+      'anilist:http://s4.anilist.co/file/x.png', // non-https scheme
+      'anilist:ftp://s4.anilist.co/file/x.png', // non-https scheme
+      'anilist:https://user:pass@s4.anilist.co/file/x.png', // userinfo present
+      'anilist:https://s4.anilist.co:8443/file/x.png', // non-standard port
+      'anilist:https://s4.anilist.co.evil.example/x.png', // suffix host confusion
+      'anilist:https://evil.example/x@s4.anilist.co', // path @ trick
+      'anilist:/file/anilistcdn/x.png', // not an absolute URL
+      'anilist:', // empty remainder
+    ];
+    for (const uri of disallowed) {
+      await expect(resolveArtwork(uri, 'w400', options(fetchImpl))).rejects.toMatchObject({
+        code: 'INVALID_SOURCE',
+      });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled(); // rejected before building any request
+  });
+
+  it('rejects source bytes that are not a decodable image', async () => {
+    const fetchImpl = stubbedFetch(imageResponse(Buffer.from('not an image'), 'image/png'));
+
+    await expect(resolveArtwork(ANILIST_URI, 'w400', options(fetchImpl))).rejects.toMatchObject({
+      code: 'NOT_AN_IMAGE',
+    });
+  });
+});
+
 describe('resolveArtwork local sources', () => {
   it('resizes a local image that lives inside a media root', async () => {
     const localPath = path.join(mediaRoot, 'movie', 'poster.jpg');
