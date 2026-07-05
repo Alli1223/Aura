@@ -1,0 +1,100 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  position: sticky;
+  top: var(--topbar-height);
+  height: calc(100vh - var(--topbar-height));
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-6);
+}
+
+/* ---- Mobile drawer ------------------------------------------------------ */
+
+.drawerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-drawer);
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(80vw, var(--sidebar-width));
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--topbar-height);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.drawerTitle {
+  font-weight: 700;
+}
+
+.drawerClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--color-text);
+}
+
+.drawerClose:hover {
+  background: var(--color-surface-2);
+}
+
+@media (min-width: 901px) {
+  .drawerOverlay {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    display: none;
+  }
+  .content {
+    padding: var(--space-4);
+  }
+}
