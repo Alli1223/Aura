@@ -6,6 +6,26 @@ import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 
 import { resolveMediaFileForServing } from '../lib/media-roots.js';
+import { QUALITIES, type HlsQuality, type HlsQualityName } from './quality-ladder.js';
+
+// The quality ladder now lives in quality-ladder.ts (the single source of truth
+// shared with playback-decision). These re-exports keep hls-session's public
+// surface unchanged for existing importers and tests.
+export {
+  HLS_QUALITY_NAMES,
+  QUALITIES,
+  QUALITY_LADDER,
+  QUALITY_NAMES,
+  isHlsQualityName,
+  qualityByName,
+  qualitiesUpTo,
+  clampQuality,
+  effectiveMaxQuality,
+  qualityNameSchema,
+  type HlsQuality,
+  type HlsQualityName,
+  type QualityRung,
+} from './quality-ladder.js';
 
 // ffmpeg HLS transcoding session manager.
 //
@@ -43,64 +63,6 @@ export const HLS_PLAYLIST_NAME = 'index.m3u8';
 
 /** Segment filename pattern (printf-style) ffmpeg writes. */
 export const HLS_SEGMENT_PATTERN = 'segment%05d.ts';
-
-// ---------------------------------------------------------------------------
-// Quality ladder
-// ---------------------------------------------------------------------------
-
-/** Named quality presets. The quality-ladder roadmap item makes these configurable. */
-export type HlsQualityName = '1080p' | '720p' | '480p';
-
-/** One quality rung: a width cap plus video/audio bitrate targets. */
-export interface HlsQuality {
-  /** Maximum output width. The source is only ever downscaled to this. */
-  readonly maxWidth: number;
-  /** Target (average) video bitrate, e.g. "6000k". */
-  readonly videoBitrate: string;
-  /** VBV peak bitrate cap. */
-  readonly maxrate: string;
-  /** VBV buffer size. */
-  readonly bufsize: string;
-  /** Stereo AAC audio bitrate, e.g. "192k". */
-  readonly audioBitrate: string;
-}
-
-/**
- * The quality ladder used by the HLS transcoder. Widths are caps: a source
- * narrower than the cap is never upscaled (the scale filter uses
- * min(iw, maxWidth)). Bitrates are software-x264 targets.
- */
-export const QUALITIES: Readonly<Record<HlsQualityName, HlsQuality>> = {
-  '1080p': {
-    maxWidth: 1920,
-    videoBitrate: '6000k',
-    maxrate: '6000k',
-    bufsize: '12000k',
-    audioBitrate: '192k',
-  },
-  '720p': {
-    maxWidth: 1280,
-    videoBitrate: '3000k',
-    maxrate: '3000k',
-    bufsize: '6000k',
-    audioBitrate: '160k',
-  },
-  '480p': {
-    maxWidth: 854,
-    videoBitrate: '1400k',
-    maxrate: '1400k',
-    bufsize: '2800k',
-    audioBitrate: '128k',
-  },
-};
-
-/** All quality names, in descending order. */
-export const HLS_QUALITY_NAMES = Object.keys(QUALITIES) as HlsQualityName[];
-
-/** Narrows an arbitrary string to a known quality name. */
-export function isHlsQualityName(value: string): value is HlsQualityName {
-  return Object.prototype.hasOwnProperty.call(QUALITIES, value);
-}
 
 // ---------------------------------------------------------------------------
 // ffmpeg argument builder (pure — no spawning, exhaustively unit-tested)

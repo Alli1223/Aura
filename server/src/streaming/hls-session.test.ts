@@ -144,11 +144,12 @@ describe('buildHlsFfmpegArgs', () => {
 });
 
 describe('quality ladder', () => {
-  it('exposes 1080p / 720p / 480p with descending width caps', () => {
-    expect(HLS_QUALITY_NAMES).toEqual(['1080p', '720p', '480p']);
+  it('exposes 1080p / 720p / 480p / 360p with descending width caps', () => {
+    expect(HLS_QUALITY_NAMES).toEqual(['1080p', '720p', '480p', '360p']);
     expect(QUALITIES['1080p'].maxWidth).toBe(1920);
     expect(QUALITIES['720p'].maxWidth).toBe(1280);
     expect(QUALITIES['480p'].maxWidth).toBe(854);
+    expect(QUALITIES['360p'].maxWidth).toBe(640);
   });
 
   it('narrows only known quality names', () => {

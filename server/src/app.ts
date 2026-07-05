@@ -22,6 +22,7 @@ import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
+import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
@@ -196,6 +197,8 @@ export function buildApp(
     config,
     streamTokenSecret: secrets.streamTokenSecret,
   });
+  // Per-user selectable quality rungs for the player's quality menu.
+  void app.register(qualityRoutes, { prefix: '/api/qualities' });
   // Access grant routes span /api/access, /api/users/:id/libraries and
   // /api/libraries/:id/access, so the plugin registers on the /api prefix.
   void app.register(accessRoutes, { prefix: '/api' });

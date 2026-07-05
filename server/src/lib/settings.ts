@@ -5,6 +5,12 @@ import { z } from 'zod';
 
 import { loadConfig } from '../config.js';
 import { getPrisma } from '../db/client.js';
+import {
+  DEFAULT_MAX_QUALITY,
+  DEFAULT_QUALITY,
+  qualityNameSchema,
+  type HlsQualityName,
+} from '../streaming/quality-ladder.js';
 import { ApiError } from './errors.js';
 
 // Typed server-settings store over the Setting key/value model. Values are
@@ -22,6 +28,17 @@ export interface Settings {
   baseUrl: string;
   /** Scratch directory for HLS transcode output. */
   transcodeDir: string;
+  /**
+   * Default transcode quality offered to players (one of the quality-ladder
+   * rung names). Applied when a client does not request a specific rung.
+   */
+  defaultQuality: HlsQualityName;
+  /**
+   * Server-wide maximum transcode quality (a quality-ladder rung name). A hard
+   * ceiling: no user's effective cap can exceed it, and every requested/chosen
+   * rung is clamped to it (further lowered by any per-user cap).
+   */
+  maxQuality: HlsQualityName;
   /**
    * TMDB credential for metadata enrichment ("" = unset/disabled): either a
    * v3 API key or a v4 read access token (a JWT starting with "eyJ"); the
@@ -66,6 +83,9 @@ const transcodeDirSchema = z
   .string('transcodeDir must be a string')
   .min(1, 'transcodeDir must not be empty');
 
+const defaultQualitySchema = qualityNameSchema;
+const maxQualitySchema = qualityNameSchema;
+
 const tmdbApiKeySchema = z
   .string('tmdbApiKey must be a string')
   .trim()
@@ -85,6 +105,8 @@ const registry: { [K in SettingKey]: SettingDefinition<Settings[K]> } = {
     schema: transcodeDirSchema,
     defaultValue: () => path.join(loadConfig().CONFIG_DIR, 'transcodes'),
   },
+  defaultQuality: { schema: defaultQualitySchema, defaultValue: () => DEFAULT_QUALITY },
+  maxQuality: { schema: maxQualitySchema, defaultValue: () => DEFAULT_MAX_QUALITY },
   tmdbApiKey: { schema: tmdbApiKeySchema, defaultValue: () => '' },
 };
 
@@ -109,6 +131,8 @@ export const settingsPatchSchema = z
     registrationEnabled: registrationEnabledSchema,
     baseUrl: baseUrlSchema,
     transcodeDir: transcodeDirSchema,
+    defaultQuality: defaultQualitySchema,
+    maxQuality: maxQualitySchema,
     tmdbApiKey: tmdbApiKeySchema,
   })
   .partial()

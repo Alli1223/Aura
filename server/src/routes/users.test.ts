@@ -35,6 +35,7 @@ interface PublicUser {
   role: string;
   isEnabled: boolean;
   mustChangePassword: boolean;
+  maxQuality: string | null;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -302,11 +303,58 @@ describe('PATCH /api/users/:id', () => {
   it('rejects invalid bodies with 400 VALIDATION', async () => {
     const user = await registerUser();
 
-    for (const payload of [{}, { role: 'superuser' }, { isEnabled: 'yes' }, { email: 'nope' }]) {
+    for (const payload of [
+      {},
+      { role: 'superuser' },
+      { isEnabled: 'yes' },
+      { email: 'nope' },
+      { maxQuality: '4k' },
+      { maxQuality: 1080 },
+    ]) {
       const response = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, payload);
       expect(response.statusCode, JSON.stringify(payload)).toBe(400);
       expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
     }
+  });
+
+  it('sets, then clears, a per-user maxQuality cap (with audit) and serializes it', async () => {
+    const user = await registerUser();
+
+    // Fresh users have no personal cap.
+    const initial = await api('GET', `/api/users/${user.id}`, admin.accessToken);
+    expect(initial.json<{ user: PublicUser }>().user.maxQuality).toBeNull();
+
+    // Set a valid ladder rung.
+    const set = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, {
+      maxQuality: '480p',
+    });
+    expect(set.statusCode).toBe(200);
+    expect(set.json<{ user: PublicUser }>().user.maxQuality).toBe('480p');
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).maxQuality).toBe(
+      '480p',
+    );
+    expect(
+      await prisma.auditLog.findFirst({
+        where: { action: 'user.max_quality_changed', targetId: user.id, userId: admin.id },
+      }),
+    ).not.toBeNull();
+
+    // Clearing with null removes the personal cap.
+    const cleared = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, {
+      maxQuality: null,
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json<{ user: PublicUser }>().user.maxQuality).toBeNull();
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).maxQuality).toBeNull();
+  });
+
+  it('lets a user see their own effective cap on GET /api/users/me', async () => {
+    const user = await registerUser();
+    await api('PATCH', `/api/users/${user.id}`, admin.accessToken, { maxQuality: '720p' });
+
+    const me = await api('GET', '/api/users/me', user.accessToken);
+    expect(me.statusCode).toBe(200);
+    expect(me.json<{ user: PublicUser }>().user.maxQuality).toBe('720p');
   });
 
   it('returns 404 for a missing user', async () => {

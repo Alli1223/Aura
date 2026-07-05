@@ -76,6 +76,8 @@ interface SettingsBody {
     registrationEnabled: boolean;
     baseUrl: string;
     transcodeDir: string;
+    defaultQuality: string;
+    maxQuality: string;
     tmdbApiKey: string;
   };
 }
@@ -137,6 +139,8 @@ describe('settings service', () => {
       registrationEnabled: true,
       baseUrl: '',
       transcodeDir: path.join(configDir, 'transcodes'),
+      defaultQuality: '720p',
+      maxQuality: '1080p',
       tmdbApiKey: '',
     });
   });
@@ -269,6 +273,8 @@ describe('GET /api/settings', () => {
       registrationEnabled: true,
       baseUrl: '',
       transcodeDir: path.join(configDir, 'transcodes'),
+      defaultQuality: '720p',
+      maxQuality: '1080p',
       tmdbApiKey: '',
     });
   });
@@ -305,6 +311,8 @@ describe('PATCH /api/settings', () => {
       registrationEnabled: true,
       baseUrl: 'https://media.example.com',
       transcodeDir: '/tmp/aura-transcodes',
+      defaultQuality: '720p',
+      maxQuality: '1080p',
       tmdbApiKey: '',
     });
 
@@ -331,6 +339,8 @@ describe('PATCH /api/settings', () => {
         registrationEnabled: true,
         baseUrl: 'https://media.example.com',
         transcodeDir: '/tmp/aura-transcodes',
+        defaultQuality: '720p',
+        maxQuality: '1080p',
         tmdbApiKey: '',
       });
     } finally {
@@ -364,6 +374,9 @@ describe('PATCH /api/settings', () => {
     ['an empty transcodeDir', { transcodeDir: '' }],
     ['a non-string tmdbApiKey', { tmdbApiKey: 42 }],
     ['an overlong tmdbApiKey', { tmdbApiKey: 'x'.repeat(513) }],
+    ['a non-ladder defaultQuality', { defaultQuality: '4k' }],
+    ['a non-ladder maxQuality', { maxQuality: 'ultra' }],
+    ['a numeric defaultQuality', { defaultQuality: 720 }],
     ['an unknown key', { serverName: 'ok', accentColor: 'red' }],
     ['an empty patch', {}],
     ['a baseUrl with a trailing slash', { baseUrl: 'https://media.example.com/' }],
@@ -389,6 +402,34 @@ describe('PATCH /api/settings', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json<SettingsBody>().settings.baseUrl).toBe(baseUrl);
+  });
+});
+
+describe('quality settings', () => {
+  it('admins can set defaultQuality and maxQuality to any ladder rung', async () => {
+    const response = await patchSettings(
+      { defaultQuality: '480p', maxQuality: '720p' },
+      adminToken,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<SettingsBody>().settings.defaultQuality).toBe('480p');
+    expect(response.json<SettingsBody>().settings.maxQuality).toBe('720p');
+    expect(await getSetting('defaultQuality')).toBe('480p');
+    expect(await getSetting('maxQuality')).toBe('720p');
+
+    // Restore the defaults for any later tests.
+    expect(
+      (await patchSettings({ defaultQuality: '720p', maxQuality: '1080p' }, adminToken)).statusCode,
+    ).toBe(200);
+  });
+
+  it('rejects a non-ladder quality with 400 VALIDATION', async () => {
+    for (const payload of [{ defaultQuality: '2160p' }, { maxQuality: 'potato' }]) {
+      const response = await patchSettings(payload, adminToken);
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+    }
   });
 });
 

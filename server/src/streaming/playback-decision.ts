@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { HLS_QUALITY_NAMES, QUALITIES, type HlsQualityName } from './hls-session.js';
+import {
+  clampQuality,
+  HLS_QUALITY_NAMES,
+  QUALITIES,
+  type HlsQualityName,
+} from './quality-ladder.js';
 
 // Playback decision engine (pure — no DB, no ffmpeg, no I/O).
 //
@@ -142,6 +147,13 @@ export interface DecidePlaybackParams {
   streams: readonly DecisionStream[];
   /** Undefined / partial => filled from the conservative web-browser profile. */
   client?: ClientCapabilities;
+  /**
+   * The user's effective maximum quality. When present, a transcode's chosen
+   * rung is clamped so it never exceeds this cap (server-side per-user
+   * enforcement). Direct play is unaffected — a file that plays as-is within a
+   * capped user's client is not forced to transcode.
+   */
+  maxQuality?: HlsQualityName;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +402,12 @@ export interface ChooseQualityParams {
   maxWidth?: number;
   maxHeight?: number;
   maxBitrate?: number;
+  /**
+   * A hard quality cap (the user's effective maximum). The chosen rung is
+   * clamped so it never exceeds this, whatever the source/client allow — this
+   * is where the per-user quality cap is enforced inside the decision engine.
+   */
+  maxQuality?: HlsQualityName;
 }
 
 /**
@@ -398,13 +416,21 @@ export interface ChooseQualityParams {
  * known (no source dimensions and no caps) it defaults to 720p, a safe middle
  * that avoids blindly transcoding to the most expensive rung. When even the
  * smallest rung is larger than the limits, it floors at that smallest rung
- * (ffmpeg's scale filter never upscales a smaller source anyway).
+ * (ffmpeg's scale filter never upscales a smaller source anyway). Finally the
+ * result is clamped to `maxQuality` when supplied, so a capped user never gets
+ * a rung above their ceiling (clamping only ever lowers, so it never upscales).
  */
 export function chooseTranscodeQuality(params: ChooseQualityParams): HlsQualityName {
   const limitWidth = Math.min(params.sourceWidth ?? Infinity, params.maxWidth ?? Infinity);
   const limitHeight = Math.min(params.sourceHeight ?? Infinity, params.maxHeight ?? Infinity);
   const limitBps = params.maxBitrate ?? Infinity;
 
+  const chosen = chooseUnclamped(limitWidth, limitHeight, limitBps);
+  return params.maxQuality === undefined ? chosen : clampQuality(chosen, params.maxQuality);
+}
+
+/** The best honest rung before any per-user cap is applied. */
+function chooseUnclamped(limitWidth: number, limitHeight: number, limitBps: number): HlsQualityName {
   // Nothing constrains the choice: pick a conservative middle default.
   if (limitWidth === Infinity && limitHeight === Infinity && limitBps === Infinity) {
     return '720p';
@@ -432,7 +458,12 @@ export function chooseTranscodeQuality(params: ChooseQualityParams): HlsQualityN
  * (container, video codec, audio codec, resolution, bitrate) so the primary
  * `transcodeReason` is stable.
  */
-export function decidePlayback({ file, streams, client }: DecidePlaybackParams): PlaybackDecision {
+export function decidePlayback({
+  file,
+  streams,
+  client,
+  maxQuality,
+}: DecidePlaybackParams): PlaybackDecision {
   const caps = mergeCapabilities(client);
 
   const videoCodec = primaryVideoCodec(file, streams);
@@ -486,6 +517,7 @@ export function decidePlayback({ file, streams, client }: DecidePlaybackParams):
     maxWidth: caps.maxWidth,
     maxHeight: caps.maxHeight,
     maxBitrate: caps.maxBitrate,
+    maxQuality,
   });
 
   return {
