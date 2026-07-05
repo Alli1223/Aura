@@ -547,6 +547,51 @@ export async function listSubtitles(
   return tracks.map(toPublicTrack);
 }
 
+/**
+ * The concrete information needed to BURN one subtitle track into a transcode,
+ * resolved from a public trackId. Keeps the trackId scheme (and the sidecar
+ * filesystem discovery) inside this module so the HLS transcoder never has to
+ * know it: it receives a stream index for embedded tracks or a validated
+ * sidecar path for external ones.
+ */
+export interface BurnSubtitleSource {
+  /** Text (libass `subtitles` filter) vs image (bitmap `overlay`). */
+  kind: SubtitleKind;
+  source: SubtitleSource;
+  /**
+   * Embedded only: 0-based index among subtitle streams, for `[0:s:<n>]`
+   * (image overlay) or the `subtitles` filter's `si=<n>` (text).
+   */
+  subtitleIndex?: number;
+  /** External only: absolute sidecar path, validated inside a media root. */
+  sidecarPath?: string;
+}
+
+/**
+ * Resolves a subtitle `trackId` (as surfaced by listSubtitles) to the concrete
+ * info needed to burn it into a transcode, validating it against the file's
+ * REAL tracks. A malformed or unknown id throws SubtitleNotFoundError (the route
+ * maps this to a 400/404). Every embedded track — text or image — resolves to
+ * its subtitle-relative stream index; an external sidecar resolves to a
+ * media-root-validated absolute path. Never converts anything (no ffmpeg run).
+ */
+export async function resolveBurnSubtitle(
+  mediaFile: SubtitleMediaFile,
+  trackId: string,
+  options: { mediaRoots: readonly string[] },
+): Promise<BurnSubtitleSource> {
+  if (!isValidTrackId(trackId)) throw new SubtitleNotFoundError(trackId);
+  const tracks = await resolveTracks(mediaFile, options.mediaRoots);
+  const track = tracks.find((candidate) => candidate.id === trackId);
+  if (track === undefined) throw new SubtitleNotFoundError(trackId);
+  return {
+    kind: track.kind,
+    source: track.source,
+    subtitleIndex: track.subtitleIndex,
+    sidecarPath: track.sidecarPath,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // WebVTT extraction
 // ---------------------------------------------------------------------------
