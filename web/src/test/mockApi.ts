@@ -1,5 +1,6 @@
 import { vi, type Mock } from 'vitest';
 
+import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
 import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/types';
 
@@ -72,6 +73,38 @@ export function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
   };
 }
 
+let continueCounter = 0;
+/** A continue-watching entry with sensible in-progress defaults. */
+export function makeContinueEntry(
+  overrides: Partial<Omit<ContinueWatchingEntry, 'item'>> & {
+    item?: Partial<ContinueWatchingEntry['item']>;
+  } = {},
+): ContinueWatchingEntry {
+  continueCounter += 1;
+  const itemId = overrides.item?.id ?? `cw-${continueCounter}`;
+  const base: ContinueWatchingEntry = {
+    mediaItemId: itemId,
+    positionMs: 30_000,
+    updatedAt: `2026-02-${String(continueCounter).padStart(2, '0')}T00:00:00.000Z`,
+    item: {
+      id: itemId,
+      type: 'movie',
+      title: `Continue ${continueCounter}`,
+      seasonNumber: null,
+      episodeNumber: null,
+      parentId: null,
+      libraryId: 'lib-1',
+      posterPath: '/cache/poster.webp',
+      runtimeMs: 120_000,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    item: { ...base.item, ...overrides.item },
+  };
+}
+
 export interface MockApiConfig {
   serverName?: string;
   registrationEnabled?: boolean;
@@ -80,6 +113,8 @@ export interface MockApiConfig {
   libraries?: Library[];
   /** Top-level items keyed by libraryId, served by GET /libraries/:id/items. */
   items?: Record<string, MediaItem[]>;
+  /** In-progress entries served by GET /continue-watching. */
+  continueWatching?: ContinueWatchingEntry[];
   /** Current password accepted by login / change-password. */
   password?: string;
   /** User returned by a successful login/register (defaults to the session). */
@@ -94,6 +129,7 @@ export interface MockApi {
     session: AuthUser | null;
     libraries: Library[];
     items: Record<string, MediaItem[]>;
+    continueWatching: ContinueWatchingEntry[];
     password: string;
     authUser: AuthUser | null;
   };
@@ -153,6 +189,14 @@ function listItems(all: MediaItem[], query: URLSearchParams) {
   return { items: list.slice(start, start + pageSize), page, pageSize, total };
 }
 
+/** Most-recently-added first, capped at `limit` — mirrors the recently-added feeds. */
+function recentlyAdded(all: MediaItem[], limit: number): MediaItem[] {
+  return all
+    .slice()
+    .sort((a, b) => (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : 0))
+    .slice(0, limit);
+}
+
 /**
  * Installs a stateful mock of the Aura API on global.fetch. Handlers mirror the
  * real server contracts (response shapes, status codes, error envelope).
@@ -167,6 +211,7 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     session: config.session ?? null,
     libraries: config.libraries ?? [],
     items: config.items ?? {},
+    continueWatching: config.continueWatching ?? [],
     password: config.password ?? 'current-pass-123',
     authUser: config.authUser ?? config.session ?? null,
   };
@@ -230,6 +275,32 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       }
       const query = new URL(url, 'http://localhost').searchParams;
       return { status: 200, body: listItems(state.items[libraryId] ?? [], query) };
+    }
+
+    if (path === '/api/continue-watching' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const limit = Number(new URL(url, 'http://localhost').searchParams.get('limit') ?? '20');
+      return { status: 200, body: { items: state.continueWatching.slice(0, limit) } };
+    }
+
+    if (path === '/api/home/recently-added' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const limit = Number(new URL(url, 'http://localhost').searchParams.get('limit') ?? '20');
+      // Cross-library feed: every accessible library's items, newest first.
+      const all = state.libraries.flatMap((library) => state.items[library.id] ?? []);
+      return { status: 200, body: { items: recentlyAdded(all, limit) } };
+    }
+
+    const recentMatch = /^\/api\/libraries\/([^/]+)\/recently-added$/.exec(path);
+    if (recentMatch !== null && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const libraryId = decodeURIComponent(recentMatch[1] ?? '');
+      // Same 404 cloak as the items route for an unknown / ungranted library.
+      if (!state.libraries.some((library) => library.id === libraryId)) {
+        return { status: 404, body: err('NOT_FOUND', 'Library not found') };
+      }
+      const limit = Number(new URL(url, 'http://localhost').searchParams.get('limit') ?? '20');
+      return { status: 200, body: { items: recentlyAdded(state.items[libraryId] ?? [], limit) } };
     }
 
     if (path === '/api/users/me/password' && method === 'POST') {
