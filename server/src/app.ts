@@ -8,6 +8,8 @@ import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import Fastify from 'fastify';
 import type { FastifyError, FastifyInstance, FastifyServerOptions } from 'fastify';
 
@@ -18,6 +20,7 @@ import { loadConfig, RATE_LIMIT_TIME_WINDOW, type Config } from './config.js';
 import { sendError } from './lib/errors.js';
 import { loadOrCreateSecrets } from './lib/secrets.js';
 import { accessRoutes } from './routes/access.js';
+import { apiTokenRoutes } from './routes/api-tokens.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { imageRoutes } from './routes/images.js';
@@ -31,6 +34,7 @@ import { subtitleRoutes } from './routes/subtitles.js';
 import { tasksRoutes } from './routes/tasks.js';
 import { userRoutes } from './routes/users.js';
 import { watchRoutes } from './routes/watch.js';
+import { appVersion } from './version.js';
 
 export interface BuildAppOptions {
   /**
@@ -46,6 +50,30 @@ export const BODY_LIMIT_BYTES = 1024 * 1024; // 1 MiB
 
 /** Request id header honoured on requests and echoed on every response. */
 export const REQUEST_ID_HEADER = 'x-request-id';
+
+/** Route prefix for the OpenAPI docs (Swagger UI at `/api/docs`, spec at `/api/docs/json`). */
+export const DOCS_ROUTE_PREFIX = '/api/docs';
+
+/**
+ * Content-Security-Policy applied ONLY to the Swagger UI routes. The global
+ * policy (see below) stays strict; this narrow override adds just what the
+ * bundled UI needs: it loads its own scripts/styles same-origin (`'self'`, no
+ * inline/eval), injects component styles inline at runtime ('unsafe-inline'
+ * for style-src — already permitted globally), and embeds icons/fonts as
+ * `data:` URIs. Scoped to `/api/docs*` so it can never relax the app's CSP.
+ */
+const DOCS_CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "script-src 'self'",
+  "script-src-attr 'none'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 /**
  * Log fields that must never reach the log output. Fastify's default
@@ -173,6 +201,44 @@ export function buildApp(
   app.decorate('authenticate', authenticate);
   app.decorate('requireAdmin', requireAdmin);
 
+  // OpenAPI spec + Swagger UI. `@fastify/swagger` must be registered before the
+  // routes it documents (it captures them via an onRoute hook), so it goes here
+  // ahead of every app.register(...routes...) below. The UI is served at
+  // /api/docs and the raw spec at /api/docs/json.
+  void app.register(swagger, {
+    openapi: {
+      openapi: '3.0.3',
+      info: {
+        title: 'Aura API',
+        description:
+          'HTTP API for the Aura media server. Authenticate with a JWT access ' +
+          'token (Authorization: Bearer <jwt>) or a personal API token ' +
+          '(X-Api-Token: aura_..., or Authorization: Bearer aura_...). Read-only ' +
+          'tokens may only issue GET/HEAD requests.',
+        version: appVersion,
+      },
+      components: {
+        securitySchemes: {
+          bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+          apiToken: { type: 'apiKey', in: 'header', name: 'X-Api-Token' },
+        },
+      },
+    },
+  });
+  void app.register(swaggerUi, {
+    routePrefix: DOCS_ROUTE_PREFIX,
+    uiConfig: { docExpansion: 'list', deepLinking: false },
+  });
+
+  // Narrowly relax the CSP for the Swagger UI routes only (see the constant).
+  // onSend runs after helmet's onRequest hook, so this override wins for docs
+  // requests while every other route keeps the strict global policy.
+  app.addHook('onSend', async (request, reply) => {
+    if (request.url === DOCS_ROUTE_PREFIX || request.url.startsWith(`${DOCS_ROUTE_PREFIX}/`)) {
+      void reply.header('content-security-policy', DOCS_CONTENT_SECURITY_POLICY);
+    }
+  });
+
   // Consistent JSON error shape for anything thrown or unhandled. 5xx bodies
   // are always generic: internal messages and stack traces are only logged.
   app.setErrorHandler((error, request, reply) => {
@@ -193,6 +259,8 @@ export function buildApp(
   void app.register(authRoutes, { prefix: '/api/auth', config });
   void app.register(settingsRoutes, { prefix: '/api/settings' });
   void app.register(userRoutes, { prefix: '/api/users' });
+  // Personal API tokens (self-service; JWT-only, never manageable via a token).
+  void app.register(apiTokenRoutes, { prefix: '/api/api-tokens' });
   void app.register(libraryRoutes, { prefix: '/api/libraries', config });
   void app.register(imageRoutes, { prefix: '/api/items', config });
   void app.register(streamRoutes, {
