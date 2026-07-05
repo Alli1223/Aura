@@ -79,7 +79,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **watch-history** — Full per-user watch history page + admin server-wide stats (most watched, storage per library)
 - [x] **scheduled-tasks** — Task scheduler: periodic scans, cache/transcode cleanup, DB backup to `/config/backups`; admin task status UI
 - [ ] **notifications-webhooks** — Webhooks on events (media added, playback started) + in-app "new media" indicators
-- [ ] **api-tokens** — Personal API tokens for third-party clients/scripts, scoped read-only vs full, revocable; OpenAPI spec published at `/api/docs`
+- [x] **api-tokens** — Personal API tokens for third-party clients/scripts, scoped read-only vs full, revocable; OpenAPI spec published at `/api/docs`
 - [ ] **logs-viewer** — Admin log viewer with level filtering + download
 - [ ] **e2e-tests** — Playwright end-to-end suite: register→grant→browse→play happy path, access-control denial paths, admin flows; runs in CI against docker compose
 - [ ] **remote-access-docs** — Production deployment docs: reverse proxy (Caddy/Traefik) TLS examples, security checklist
