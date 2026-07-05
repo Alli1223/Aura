@@ -21,6 +21,19 @@ function invalidPath(message: string): ApiError {
 }
 
 /**
+ * The configured media roots from the MEDIA_ROOTS environment variable
+ * (comma-separated), resolved to absolute paths; defaults to `/media` when
+ * unset. Used by callers that do not otherwise receive the roots explicitly.
+ */
+export function mediaRootsFromEnv(): string[] {
+  return (process.env.MEDIA_ROOTS ?? '/media')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => path.resolve(entry));
+}
+
+/**
  * True when `child` is `parent` or lives underneath it. Both arguments must
  * already be absolute, normalised paths (realpath output qualifies).
  */

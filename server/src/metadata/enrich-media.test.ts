@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,10 +22,13 @@ const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const TMDB_KEY = '0123456789abcdef0123456789abcdef';
 
 let tempDir: string;
+let mediaRoot: string;
 let prisma: PrismaClient;
 
 beforeAll(async () => {
   tempDir = await mkdtemp(path.join(tmpdir(), 'aura-enrich-media-test-'));
+  mediaRoot = path.join(tempDir, 'media');
+  await mkdir(mediaRoot, { recursive: true });
   const databaseUrl = `file:${path.join(tempDir, 'test.db')}`;
 
   execSync('npx prisma migrate deploy', {
@@ -272,5 +275,186 @@ describe('enrichItem — non-anime library', () => {
       mediaItemId: 'does-not-exist',
       message: 'MediaItem not found',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local sidecar precedence
+// ---------------------------------------------------------------------------
+
+const NFO_TITLE = 'Local NFO Title';
+const NFO_PLOT = 'Overview curated in the local NFO.';
+
+/** Writes a movie .nfo without genres/artwork so those still fall back to TMDB. */
+function movieNfo(): string {
+  return (
+    `<movie><title>${NFO_TITLE}</title><plot>${NFO_PLOT}</plot>` +
+    `<year>1999</year><mpaa>Rated R</mpaa></movie>`
+  );
+}
+
+/**
+ * Creates a movies library rooted at a fresh folder inside the media root, a
+ * movie MediaItem and its MediaFile. Returns the item id and the movie dir so
+ * a test can drop sidecar files next to the video.
+ */
+async function createMovieWithFile(
+  title: string,
+  year: number,
+): Promise<{ id: string; dir: string; videoPath: string }> {
+  const suffix = randomUUID();
+  const dir = path.join(mediaRoot, `${title} (${year}) ${suffix}`);
+  await mkdir(dir, { recursive: true });
+  const videoPath = path.join(dir, `${title}.mkv`);
+  await writeFile(videoPath, 'video-bytes');
+
+  const library = await prisma.library.create({
+    data: { name: `Lib ${suffix}`, type: 'movies', paths: { create: { path: mediaRoot } } },
+  });
+  const item = await prisma.mediaItem.create({
+    data: { libraryId: library.id, type: 'movie', title, sortTitle: title.toLowerCase(), year },
+  });
+  await prisma.mediaFile.create({
+    data: {
+      mediaItemId: item.id,
+      path: videoPath,
+      size: BigInt(11),
+      mtimeMs: BigInt(1),
+      status: 'available',
+    },
+  });
+  return { id: item.id, dir, videoPath };
+}
+
+function tmdbForInception(): Record<string, unknown> {
+  return {
+    '/3/search/movie': movieSearch(27205, 'Inception', '2010-07-15'),
+    '/3/movie/27205': movieDetails(27205, 'Inception', '2010-07-15'),
+  };
+}
+
+describe('enrichItem — local NFO precedence', () => {
+  it('overlays NFO fields over online metadata and reports source "local+tmdb"', async () => {
+    const { id, dir } = await createMovieWithFile('Inception', 2010);
+    await writeFile(path.join(dir, 'Inception.nfo'), movieNfo());
+    stubRouter({ tmdb: tmdbForInception() });
+
+    const result = await enrichItem(id, 'movies', undefined, [mediaRoot]);
+
+    expect(result).toEqual({ status: 'updated', source: 'local+tmdb', mediaItemId: id, tmdbId: 27205 });
+    const item = await prisma.mediaItem.findUniqueOrThrow({ where: { id }, include: { genres: true } });
+    // NFO wins for the fields it provides...
+    expect(item.title).toBe(NFO_TITLE);
+    expect(item.overview).toBe(NFO_PLOT);
+    expect(item.contentRating).toBe('R');
+    // ...online fills the gaps the NFO left (genres, tmdbId, poster).
+    expect(item.tmdbId).toBe(27205);
+    expect(item.genres.map((g) => g.name)).toContain('Animation');
+    expect(item.posterPath).toBe('tmdb:/poster.jpg');
+  });
+
+  it('lets local artwork override the online poster/backdrop paths', async () => {
+    const { id, dir } = await createMovieWithFile('Inception', 2010);
+    await writeFile(path.join(dir, 'Inception.nfo'), movieNfo());
+    const poster = path.join(dir, 'poster.jpg');
+    const fanart = path.join(dir, 'fanart.jpg');
+    await writeFile(poster, 'p');
+    await writeFile(fanart, 'f');
+    stubRouter({ tmdb: tmdbForInception() });
+
+    const result = await enrichItem(id, 'movies', undefined, [mediaRoot]);
+
+    expect(result.source).toBe('local+tmdb');
+    const item = await prisma.mediaItem.findUniqueOrThrow({ where: { id } });
+    expect(item.posterPath).toBe(poster);
+    expect(item.backdropPath).toBe(fanart);
+  });
+
+  it('reports source "local" when an NFO is present but online finds no match', async () => {
+    const { id, dir } = await createMovieWithFile('Obscure Film', 2001);
+    await writeFile(path.join(dir, 'Obscure Film.nfo'), movieNfo());
+    // TMDB returns a wrong-titled result the matcher rejects.
+    stubRouter({ tmdb: { '/3/search/movie': movieSearch(7, 'Totally Different', '2001-01-01') } });
+
+    const result = await enrichItem(id, 'movies', undefined, [mediaRoot]);
+
+    expect(result).toEqual({ status: 'updated', source: 'local', mediaItemId: id });
+    const item = await prisma.mediaItem.findUniqueOrThrow({ where: { id } });
+    expect(item.title).toBe(NFO_TITLE);
+    expect(item.overview).toBe(NFO_PLOT);
+  });
+
+  it('is identical to online-only enrichment when no sidecars exist (regression)', async () => {
+    const { id } = await createMovieWithFile('Inception', 2010);
+    stubRouter({ tmdb: tmdbForInception() });
+
+    const result = await enrichItem(id, 'movies', undefined, [mediaRoot]);
+
+    expect(result).toEqual({ status: 'updated', source: 'tmdb', mediaItemId: id, tmdbId: 27205 });
+    const item = await prisma.mediaItem.findUniqueOrThrow({ where: { id } });
+    // Scanner title preserved; TMDB overview applied.
+    expect(item.title).toBe('Inception');
+    expect(item.overview).toBe('A detailed TMDB synopsis.');
+  });
+
+  it('reads tvshow.nfo for a show via its episode files (source "local")', async () => {
+    const suffix = randomUUID();
+    const showDir = path.join(mediaRoot, `Cowboy Bebop ${suffix}`);
+    const seasonDir = path.join(showDir, 'Season 01');
+    await mkdir(seasonDir, { recursive: true });
+    await writeFile(
+      path.join(showDir, 'tvshow.nfo'),
+      `<tvshow><title>${NFO_TITLE}</title><plot>${NFO_PLOT}</plot><premiered>1998-04-03</premiered></tvshow>`,
+    );
+    const episodeVideo = path.join(seasonDir, 'Cowboy Bebop - S01E01.mkv');
+    await writeFile(episodeVideo, 'v');
+
+    const library = await prisma.library.create({
+      data: { name: `Lib ${suffix}`, type: 'tv', paths: { create: { path: mediaRoot } } },
+    });
+    const show = await prisma.mediaItem.create({
+      data: { libraryId: library.id, type: 'show', title: 'Cowboy Bebop', sortTitle: 'cowboy bebop' },
+    });
+    const season = await prisma.mediaItem.create({
+      data: {
+        libraryId: library.id,
+        type: 'season',
+        parentId: show.id,
+        title: 'Season 1',
+        sortTitle: 'season 1',
+        seasonNumber: 1,
+      },
+    });
+    const episode = await prisma.mediaItem.create({
+      data: {
+        libraryId: library.id,
+        type: 'episode',
+        parentId: season.id,
+        title: 'Episode 1',
+        sortTitle: 'episode 1',
+        seasonNumber: 1,
+        episodeNumber: 1,
+      },
+    });
+    await prisma.mediaFile.create({
+      data: {
+        mediaItemId: episode.id,
+        path: episodeVideo,
+        size: BigInt(1),
+        mtimeMs: BigInt(1),
+        status: 'available',
+      },
+    });
+
+    // No TMDB match, so only the local tvshow.nfo contributes.
+    stubRouter({ tmdb: { '/3/search/tv': { page: 1, results: [] } } });
+
+    const result = await enrichItem(show.id, 'tv', undefined, [mediaRoot]);
+
+    expect(result).toEqual({ status: 'updated', source: 'local', mediaItemId: show.id });
+    const item = await prisma.mediaItem.findUniqueOrThrow({ where: { id: show.id } });
+    expect(item.title).toBe(NFO_TITLE);
+    expect(item.overview).toBe(NFO_PLOT);
+    expect(item.year).toBe(1998);
   });
 });
