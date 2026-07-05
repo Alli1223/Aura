@@ -2,7 +2,14 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { getPrisma } from '../db/client.js';
 import { writeAuditLog } from '../lib/audit.js';
-import { getAllSettings, getSetting, setSettings, settingsPatchSchema } from '../lib/settings.js';
+import {
+  getAllSettings,
+  getSetting,
+  SECRET_SETTING_KEYS,
+  setSettings,
+  settingsPatchSchema,
+  type SettingKey,
+} from '../lib/settings.js';
 import { parseBody } from '../lib/validation.js';
 
 export const settingsRoutes: FastifyPluginAsync = async (app) => {
@@ -23,15 +30,22 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
 
     const settings = await setSettings(patch);
 
-    // None of the current settings are secret, so new values are auditable.
-    // Revisit before adding secret-valued settings (log key names only).
+    // Audit the change, but never the value of secret settings (tmdbApiKey):
+    // those are recorded as "[REDACTED]" so the audit log shows WHAT changed
+    // without persisting the credential.
+    const changed = Object.fromEntries(
+      Object.entries(patch).map(([key, value]) => [
+        key,
+        SECRET_SETTING_KEYS.has(key as SettingKey) ? '[REDACTED]' : value,
+      ]),
+    );
     await writeAuditLog(
       prisma,
       {
         action: 'settings.updated',
         userId: request.user.id,
         ip: request.ip,
-        details: { changed: patch },
+        details: { changed },
       },
       request.log,
     );

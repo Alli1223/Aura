@@ -22,6 +22,13 @@ export interface Settings {
   baseUrl: string;
   /** Scratch directory for HLS transcode output. */
   transcodeDir: string;
+  /**
+   * TMDB credential for metadata enrichment ("" = unset/disabled): either a
+   * v3 API key or a v4 read access token (a JWT starting with "eyJ"); the
+   * TMDB client detects which style it was given. SECRET — never expose via
+   * unauthenticated routes and never log/audit its value.
+   */
+  tmdbApiKey: string;
 }
 
 export type SettingKey = keyof Settings;
@@ -59,6 +66,11 @@ const transcodeDirSchema = z
   .string('transcodeDir must be a string')
   .min(1, 'transcodeDir must not be empty');
 
+const tmdbApiKeySchema = z
+  .string('tmdbApiKey must be a string')
+  .trim()
+  .max(512, 'tmdbApiKey must be at most 512 characters');
+
 interface SettingDefinition<T> {
   schema: z.ZodType<T>;
   /** Lazy so defaults can depend on runtime config (e.g. CONFIG_DIR). */
@@ -73,10 +85,18 @@ const registry: { [K in SettingKey]: SettingDefinition<Settings[K]> } = {
     schema: transcodeDirSchema,
     defaultValue: () => path.join(loadConfig().CONFIG_DIR, 'transcodes'),
   },
+  tmdbApiKey: { schema: tmdbApiKeySchema, defaultValue: () => '' },
 };
 
 /** All known setting keys. Unknown keys are rejected everywhere. */
 export const SETTING_KEYS = Object.keys(registry) as SettingKey[];
+
+/**
+ * Settings whose values are secrets. Their values must never be written to
+ * logs or audit details (redact to key names / "[REDACTED]") and must never
+ * be returned by unauthenticated routes.
+ */
+export const SECRET_SETTING_KEYS: ReadonlySet<SettingKey> = new Set<SettingKey>(['tmdbApiKey']);
 
 /**
  * Partial-update schema for the admin PATCH endpoint and setSettings.
@@ -89,6 +109,7 @@ export const settingsPatchSchema = z
     registrationEnabled: registrationEnabledSchema,
     baseUrl: baseUrlSchema,
     transcodeDir: transcodeDirSchema,
+    tmdbApiKey: tmdbApiKeySchema,
   })
   .partial()
   .strict()
