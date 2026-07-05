@@ -43,7 +43,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 
 - [x] **stream-tokens** — Short-lived signed streaming tokens so `<video>`/HLS requests are authenticated without exposing JWTs in URLs; per-user, per-media scope checks
 - [x] **direct-play** — Range-request file streaming endpoint with library-access + path-safety enforcement; content-type mapping
-- [ ] **playback-decision** — Decision engine: client reports capabilities, server picks direct play vs transcode (container remux vs full transcode) per video/audio stream
+- [x] **playback-decision** — Decision engine: client reports capabilities, server picks direct play vs transcode (container remux vs full transcode) per video/audio stream
 - [x] **hls-transcoder** — ffmpeg HLS session manager: spawn with arg-array only, segment output to per-session scratch dir, playlist generation, session keepalive/timeout, cleanup on stop/disconnect, concurrent session limits
 - [ ] **transcode-seek** — Seeking within transcoded content (segment-window restarts at requested timestamp)
 - [ ] **quality-ladder** — User-selectable quality levels (e.g. original/1080p/720p/480p + bitrates); admin-configurable defaults & per-user max quality
