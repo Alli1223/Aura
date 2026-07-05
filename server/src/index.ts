@@ -2,7 +2,8 @@ import { buildApp } from './app.js';
 import { config } from './config.js';
 import { seedDefaultLibraries } from './lib/seed-libraries.js';
 import { LibraryWatcher, setActiveLibraryWatcher } from './scanner/library-watcher.js';
-import { ScanScheduler } from './scanner/scan-scheduler.js';
+import { createBuiltInTasks } from './tasks/built-in-tasks.js';
+import { setActiveTaskRunner, TaskRunner } from './tasks/task-runner.js';
 
 const app = buildApp({ logger: true }, { webDistDir: config.WEB_DIST });
 
@@ -38,21 +39,23 @@ if (watcher !== null) {
   }
 }
 
-// Periodic safety-net rescans (catches changes missed while the watcher was
-// down). Disabled when SCAN_INTERVAL_MS is 0.
-const scheduler =
-  config.SCAN_INTERVAL_MS > 0
-    ? new ScanScheduler({
-        intervalMs: config.SCAN_INTERVAL_MS,
-        mediaRoots: config.MEDIA_ROOTS,
-        log: app.log,
-      })
-    : null;
-scheduler?.start();
+// Periodic maintenance task runner. This subsumes the old standalone
+// ScanScheduler: the `library-scan-all` task runs scanAllLibraries on
+// SCAN_INTERVAL_MS (0 disables just that task) as a safety-net rescan, alongside
+// transcode/artwork cleanup and DB backup. Started only when TASKS_ENABLED
+// (disabled by default under NODE_ENV=test); the timers are unref'd so they
+// never keep the process alive.
+const taskRunner = new TaskRunner({ log: app.log });
+for (const task of createBuiltInTasks({ config, log: app.log })) {
+  taskRunner.register(task);
+}
+setActiveTaskRunner(taskRunner);
+if (config.TASKS_ENABLED) taskRunner.start();
 
-// Stop the watcher and scheduler cleanly whenever the server closes.
+// Stop the watcher and task runner cleanly whenever the server closes.
 app.addHook('onClose', async () => {
-  scheduler?.stop();
+  taskRunner.stop();
+  setActiveTaskRunner(null);
   setActiveLibraryWatcher(null);
   await watcher?.stop();
 });

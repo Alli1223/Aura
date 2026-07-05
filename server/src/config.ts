@@ -170,6 +170,8 @@ const envSchema = z
     /**
      * Interval (ms) between scheduled full rescans of every library. 0 (the
      * effective floor) disables the periodic scheduler entirely. Default 6h.
+     * The scheduled-tasks runner reads this as the `library-scan-all` task's
+     * interval (a value of 0 leaves the task registered but disabled).
      */
     SCAN_INTERVAL_MS: z.coerce
       .number()
@@ -177,12 +179,78 @@ const envSchema = z
       .min(0)
       .max(30 * 24 * 60 * 60 * 1000)
       .default(6 * 60 * 60 * 1000),
+    /**
+     * Master switch for the periodic maintenance task runner (library scans,
+     * transcode/artwork cleanup, DB backup). Defaults to enabled, except under
+     * NODE_ENV=test where it defaults to disabled so the suite never
+     * auto-schedules background work (task tests build runners explicitly).
+     */
+    TASKS_ENABLED: z.stringbool().optional(),
+    /**
+     * Interval (ms) between transcode-scratch cleanups. 0 disables the task.
+     * Default 1h.
+     */
+    TRANSCODE_CLEANUP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(30 * 24 * 60 * 60 * 1000)
+      .default(60 * 60 * 1000),
+    /**
+     * Age (ms) a transcode scratch dir (HLS session dir or subtitle cache
+     * entry) must exceed before the cleanup task removes it. Kept comfortably
+     * above HLS_SESSION_IDLE_MS so a dir old enough to sweep cannot belong to a
+     * live/recently-active session (the idle reaper would already have taken
+     * it). Default 1h.
+     */
+    TRANSCODE_CLEANUP_MAX_AGE_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .max(30 * 24 * 60 * 60 * 1000)
+      .default(60 * 60 * 1000),
+    /**
+     * Interval (ms) between artwork-cache eviction runs. 0 disables the task.
+     * Default 6h.
+     */
+    ARTWORK_EVICT_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(30 * 24 * 60 * 60 * 1000)
+      .default(6 * 60 * 60 * 1000),
+    /**
+     * Byte budget the artwork cache is trimmed down to on each eviction run
+     * (LRU-ish: least recently used files are deleted first). Default 1 GiB.
+     */
+    ARTWORK_CACHE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .min(1024 * 1024)
+      .default(1024 * 1024 * 1024),
+    /**
+     * Interval (ms) between SQLite hot backups (`VACUUM INTO`). 0 disables the
+     * task. Default 24h.
+     */
+    DB_BACKUP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(30 * 24 * 60 * 60 * 1000)
+      .default(24 * 60 * 60 * 1000),
+    /**
+     * Number of most-recent database backups to retain under
+     * `${CONFIG_DIR}/backups`; older backups are pruned after each run.
+     * Default 7.
+     */
+    BACKUP_RETENTION: z.coerce.number().int().min(1).max(365).default(7),
   })
   .transform((env) => ({
     ...env,
     LOG_LEVEL: env.LOG_LEVEL ?? (env.NODE_ENV === 'test' ? ('warn' as const) : ('info' as const)),
     RATE_LIMIT_ENABLED: env.RATE_LIMIT_ENABLED ?? env.NODE_ENV !== 'test',
     WATCH_ENABLED: env.WATCH_ENABLED ?? env.NODE_ENV !== 'test',
+    TASKS_ENABLED: env.TASKS_ENABLED ?? env.NODE_ENV !== 'test',
   }));
 
 export type Config = z.infer<typeof envSchema>;
