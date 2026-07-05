@@ -22,6 +22,7 @@ import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { libraryRoutes } from './routes/libraries.js';
 import { settingsRoutes } from './routes/settings.js';
+import { streamRoutes } from './routes/stream.js';
 import { userRoutes } from './routes/users.js';
 
 export interface BuildAppOptions {
@@ -183,6 +184,11 @@ export function buildApp(
   void app.register(settingsRoutes, { prefix: '/api/settings' });
   void app.register(userRoutes, { prefix: '/api/users' });
   void app.register(libraryRoutes, { prefix: '/api/libraries', config });
+  void app.register(streamRoutes, {
+    prefix: '/api/stream',
+    config,
+    streamTokenSecret: secrets.streamTokenSecret,
+  });
   // Access grant routes span /api/access, /api/users/:id/libraries and
   // /api/libraries/:id/access, so the plugin registers on the /api prefix.
   void app.register(accessRoutes, { prefix: '/api' });

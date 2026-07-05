@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadConfig } from './config.js';
+import { DEFAULT_STREAM_TOKEN_TTL_MS, loadConfig } from './config.js';
 
 // Pure unit tests: loadConfig is given explicit env objects, so nothing here
 // depends on (or mutates) the real process environment.
@@ -73,6 +73,28 @@ describe('loadConfig hardening options', () => {
     expect(() => loadConfig({ LOG_LEVEL: 'loud' })).toThrow(/Invalid environment/);
     expect(() => loadConfig({ RATE_LIMIT_MAX: '0' })).toThrow(/Invalid environment/);
     expect(() => loadConfig({ RATE_LIMIT_AUTH_MAX: 'lots' })).toThrow(/Invalid environment/);
+  });
+});
+
+describe('loadConfig STREAM_TOKEN_TTL_MS', () => {
+  it('defaults to six hours', () => {
+    expect(loadConfig({}).STREAM_TOKEN_TTL_MS).toBe(DEFAULT_STREAM_TOKEN_TTL_MS);
+    expect(DEFAULT_STREAM_TOKEN_TTL_MS).toBe(6 * 60 * 60 * 1000);
+  });
+
+  it('accepts an explicit override in milliseconds', () => {
+    expect(loadConfig({ STREAM_TOKEN_TTL_MS: '60000' }).STREAM_TOKEN_TTL_MS).toBe(60_000);
+  });
+
+  it.each([
+    ['a non-number', 'soon'],
+    ['zero', '0'],
+    ['a negative value', '-1'],
+    ['a sub-second value', '999'],
+    ['a fraction', '60000.5'],
+    ['more than seven days', String(8 * 24 * 60 * 60 * 1000)],
+  ])('rejects %s', (_label, value) => {
+    expect(() => loadConfig({ STREAM_TOKEN_TTL_MS: value })).toThrow(/Invalid environment/);
   });
 });
 

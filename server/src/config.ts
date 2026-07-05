@@ -8,6 +8,13 @@ export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', '
 export const RATE_LIMIT_TIME_WINDOW = '1 minute';
 
 /**
+ * Default lifetime of a signed streaming token (6 hours): long enough to
+ * cover a feature film plus pauses, short enough to bound the exposure of a
+ * leaked URL. Overridable via STREAM_TOKEN_TTL_MS.
+ */
+export const DEFAULT_STREAM_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
  * Accepts an origin like `https://app.example.com` (scheme + host + optional
  * port, no path). A single trailing slash is tolerated and stripped.
  */
@@ -119,6 +126,17 @@ const envSchema = z
     RATE_LIMIT_AUTH_MAX: z.coerce.number().int().min(1).default(10),
     /** Per-IP budget per minute for token refresh. */
     RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().min(1).default(30),
+    /**
+     * Lifetime of signed streaming tokens in milliseconds. Bounded below at
+     * one second (shorter would break playback outright) and above at seven
+     * days (long-lived streaming URLs defeat the point of signing them).
+     */
+    STREAM_TOKEN_TTL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(7 * 24 * 60 * 60 * 1000)
+      .default(DEFAULT_STREAM_TOKEN_TTL_MS),
   })
   .transform((env) => ({
     ...env,
