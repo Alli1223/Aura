@@ -1,5 +1,6 @@
 import { vi, type Mock } from 'vitest';
 
+import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
 import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/types';
@@ -105,6 +106,49 @@ export function makeContinueEntry(
   };
 }
 
+let fileCounter = 0;
+/** A serialized media file (with streams) carrying sensible defaults. */
+export function makeFile(overrides: Partial<MediaFileInfo> = {}): MediaFileInfo {
+  fileCounter += 1;
+  return {
+    id: `file-${fileCounter}`,
+    container: 'mkv',
+    width: 1920,
+    height: 1080,
+    durationMs: 7_200_000,
+    bitrate: 8_000_000,
+    videoCodec: 'h264',
+    size: 4_000_000_000,
+    audioStreams: [],
+    subtitleStreams: [],
+    ...overrides,
+  };
+}
+
+/** A serialized episode (MediaItem + play info), defaulting to one playable file. */
+export function makeEpisode(overrides: Partial<DetailEpisode> = {}): DetailEpisode {
+  const { hasFile, primaryMediaFileId, ...itemOverrides } = overrides;
+  const item = makeItem({ type: 'episode', ...itemOverrides });
+  return {
+    ...item,
+    hasFile: hasFile ?? true,
+    primaryMediaFileId: primaryMediaFileId !== undefined ? primaryMediaFileId : `${item.id}-file`,
+  };
+}
+
+/** An ItemDetail payload with the sub-collections defaulted to empty. */
+export function makeDetail(
+  item: MediaItem,
+  extra: Partial<Omit<ItemDetail, 'item'>> = {},
+): ItemDetail {
+  return {
+    item,
+    files: extra.files ?? [],
+    seasons: extra.seasons ?? [],
+    episodes: extra.episodes ?? [],
+  };
+}
+
 export interface MockApiConfig {
   serverName?: string;
   registrationEnabled?: boolean;
@@ -115,6 +159,8 @@ export interface MockApiConfig {
   items?: Record<string, MediaItem[]>;
   /** In-progress entries served by GET /continue-watching. */
   continueWatching?: ContinueWatchingEntry[];
+  /** Item detail payloads keyed by item id, served by GET /items/:id. */
+  details?: Record<string, ItemDetail>;
   /** Current password accepted by login / change-password. */
   password?: string;
   /** User returned by a successful login/register (defaults to the session). */
@@ -130,9 +176,79 @@ export interface MockApi {
     libraries: Library[];
     items: Record<string, MediaItem[]>;
     continueWatching: ContinueWatchingEntry[];
+    details: Record<string, ItemDetail>;
     password: string;
     authUser: AuthUser | null;
   };
+}
+
+/** Re-derives a container detail's watch-state roll-up from its episodes. */
+function rollUpDetail(detail: ItemDetail): void {
+  const episodes = detail.episodes;
+  let watchedEpisodeCount = 0;
+  let nextUnwatchedId: string | null = null;
+  let positionMs = 0;
+  for (const episode of episodes) {
+    if (episode.watchState.watched) watchedEpisodeCount += 1;
+    else if (nextUnwatchedId === null) {
+      nextUnwatchedId = episode.id;
+      positionMs = episode.watchState.positionMs;
+    }
+  }
+  detail.item = {
+    ...detail.item,
+    watchState: {
+      ...detail.item.watchState,
+      watched: episodes.length > 0 && watchedEpisodeCount === episodes.length,
+      positionMs,
+      episodeCount: episodes.length,
+      watchedEpisodeCount,
+      nextUnwatchedId,
+    },
+  };
+}
+
+/**
+ * Applies a watched flag to the stored detail state, mirroring the server's
+ * cascade so a post-mutation refetch stays consistent: a movie/episode marks
+ * itself, a season/show cascades to its episodes, and any parent season that
+ * lists the toggled episode has its roll-up re-derived.
+ */
+function applyWatchedToDetails(
+  details: Record<string, ItemDetail>,
+  id: string,
+  watched: boolean,
+): { type: string; affectedCount: number } {
+  let type = 'movie';
+  let affectedCount = 1;
+
+  const own = details[id];
+  if (own !== undefined) {
+    type = own.item.type;
+    if (type === 'season' || type === 'show') {
+      own.episodes = own.episodes.map((episode) => ({
+        ...episode,
+        watchState: { ...episode.watchState, watched, positionMs: 0 },
+      }));
+      affectedCount = own.episodes.length;
+      rollUpDetail(own);
+    } else {
+      own.item = { ...own.item, watchState: { ...own.item.watchState, watched, positionMs: 0 } };
+    }
+  }
+
+  // Reflect an episode toggle inside any parent season that lists it.
+  for (const detail of Object.values(details)) {
+    if (!detail.episodes.some((episode) => episode.id === id)) continue;
+    detail.episodes = detail.episodes.map((episode) =>
+      episode.id === id
+        ? { ...episode, watchState: { ...episode.watchState, watched, positionMs: 0 } }
+        : episode,
+    );
+    rollUpDetail(detail);
+  }
+
+  return { type, affectedCount };
 }
 
 function err(code: string, message: string) {
@@ -212,6 +328,7 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     libraries: config.libraries ?? [],
     items: config.items ?? {},
     continueWatching: config.continueWatching ?? [],
+    details: config.details ?? {},
     password: config.password ?? 'current-pass-123',
     authUser: config.authUser ?? config.session ?? null,
   };
@@ -301,6 +418,85 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       }
       const limit = Number(new URL(url, 'http://localhost').searchParams.get('limit') ?? '20');
       return { status: 200, body: { items: recentlyAdded(state.items[libraryId] ?? [], limit) } };
+    }
+
+    // Item detail children: a show's seasons or a season's episodes.
+    const childrenMatch = /^\/api\/items\/([^/]+)\/children$/.exec(path);
+    if (childrenMatch !== null && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(childrenMatch[1] ?? '');
+      const detail = state.details[id];
+      if (detail === undefined) return { status: 404, body: err('NOT_FOUND', 'Item not found') };
+      const items = detail.item.type === 'show' ? detail.seasons : detail.episodes;
+      return { status: 200, body: { items } };
+    }
+
+    // Explicit (un)mark, cascading to descendants for shows/seasons.
+    const watchedMatch = /^\/api\/items\/([^/]+)\/watched$/.exec(path);
+    if (watchedMatch !== null && method === 'PUT') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(watchedMatch[1] ?? '');
+      const watched = body.watched === true;
+      const { type, affectedCount } = applyWatchedToDetails(state.details, id, watched);
+      return { status: 200, body: { summary: { itemId: id, type, watched, affectedCount } } };
+    }
+
+    // Playback progress report (leaf items).
+    const progressMatch = /^\/api\/items\/([^/]+)\/progress$/.exec(path);
+    if (progressMatch !== null && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(progressMatch[1] ?? '');
+      const positionMs = typeof body.positionMs === 'number' ? body.positionMs : 0;
+      return {
+        status: 200,
+        body: {
+          state: {
+            mediaItemId: id,
+            positionMs: Math.max(0, positionMs),
+            watched: false,
+            watchedAt: null,
+            playCount: 0,
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      };
+    }
+
+    // Single-item derived state.
+    const stateMatch = /^\/api\/items\/([^/]+)\/state$/.exec(path);
+    if (stateMatch !== null && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(stateMatch[1] ?? '');
+      const detail = state.details[id];
+      const ws = detail?.item.watchState;
+      return {
+        status: 200,
+        body: {
+          state: {
+            mediaItemId: id,
+            type: detail?.item.type ?? 'movie',
+            watched: ws?.watched ?? false,
+            positionMs: ws?.positionMs ?? 0,
+            playCount: 0,
+            watchedAt: null,
+            updatedAt: null,
+            episodeCount: ws?.episodeCount ?? 0,
+            watchedEpisodeCount: ws?.watchedEpisodeCount ?? 0,
+            nextUnwatchedId: ws?.nextUnwatchedId ?? null,
+          },
+        },
+      };
+    }
+
+    // Item detail: movie -> files; show -> seasons; season -> episodes. Single
+    // path segment (the /children, /watched, ... variants matched above).
+    const detailMatch = /^\/api\/items\/([^/]+)$/.exec(path);
+    if (detailMatch !== null && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(detailMatch[1] ?? '');
+      const detail = state.details[id];
+      if (detail === undefined) return { status: 404, body: err('NOT_FOUND', 'Item not found') };
+      return { status: 200, body: detail };
     }
 
     if (path === '/api/users/me/password' && method === 'POST') {

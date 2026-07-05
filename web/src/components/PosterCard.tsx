@@ -19,6 +19,11 @@ export interface PosterCardProps {
   size?: ArtworkSize;
   /** Native `<img>` loading strategy (default 'lazy'). */
   loading?: 'lazy' | 'eager';
+  /**
+   * Optional query string (no leading `?`) appended to the detail link, e.g.
+   * `show=abc` so a season card carries its parent-show context for breadcrumbs.
+   */
+  search?: string;
 }
 
 /** Watch-state → visual overlay: whether it's fully watched and the fraction done. */
@@ -44,7 +49,7 @@ function yearLabel(year: number | null): string {
   return year === null ? '' : ` (${year})`;
 }
 
-export function PosterCard({ item, size = 'w400', loading = 'lazy' }: PosterCardProps) {
+export function PosterCard({ item, size = 'w400', loading = 'lazy', search }: PosterCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const src = artworkSrc(item.posterUrl, size);
   const showFallback = src === null || imageFailed;
@@ -53,9 +58,11 @@ export function PosterCard({ item, size = 'w400', loading = 'lazy' }: PosterCard
   const inProgress = !watched && fraction > 0;
   const progressPercent = Math.round(fraction * 100);
   const label = `${item.title}${yearLabel(item.year)}`;
+  const to =
+    search !== undefined && search !== '' ? `/items/${item.id}?${search}` : `/items/${item.id}`;
 
   return (
-    <Link to={`/items/${item.id}`} className={styles.card} aria-label={label}>
+    <Link to={to} className={styles.card} aria-label={label}>
       <div className={styles.poster}>
         {showFallback ? (
           <div className={styles.fallback} aria-hidden="true">

@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router';
 import { AppShell } from '../components/AppShell';
 import { AdminPage } from '../pages/AdminPage';
 import { HomePage } from '../pages/HomePage';
+import { ItemDetailPage } from '../pages/ItemDetailPage';
 import { LibraryPage } from '../pages/LibraryPage';
 import { LoginPage } from '../pages/LoginPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
@@ -29,6 +30,7 @@ export function AppRoutes() {
           <Route element={<AppShell />}>
             <Route index element={<HomePage />} />
             <Route path="library/:id" element={<LibraryPage />} />
+            <Route path="items/:id" element={<ItemDetailPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route element={<RequireAdmin />}>
               <Route path="admin" element={<AdminPage />} />
