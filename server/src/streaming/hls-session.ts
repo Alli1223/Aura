@@ -64,6 +64,13 @@ export const HLS_PLAYLIST_NAME = 'index.m3u8';
 /** Segment filename pattern (printf-style) ffmpeg writes. */
 export const HLS_SEGMENT_PATTERN = 'segment%05d.ts';
 
+/**
+ * Upper bound on output audio channels when preserving a surround source. Caps
+ * a source with an exotic channel count (e.g. 7.1+ or object audio decoded to
+ * many channels) at 5.1, keeping the aac encode sane and widely playable.
+ */
+export const MAX_TRANSCODE_AUDIO_CHANNELS = 6;
+
 // ---------------------------------------------------------------------------
 // ffmpeg argument builder (pure — no spawning, exhaustively unit-tested)
 // ---------------------------------------------------------------------------
@@ -80,6 +87,20 @@ export interface BuildHlsArgsParams {
    * (first audio). The audio-tracks roadmap item wires selection through here.
    */
   audioStreamIndex?: number;
+  /**
+   * Whether the client can only play stereo. When true (the default) the audio
+   * is always downmixed to 2 channels (`-ac 2`) — the universally-safe baseline
+   * for `<video>`/hls.js. When false AND `sourceChannels` reports a surround
+   * source (>2), the source channel count is preserved (capped at
+   * MAX_TRANSCODE_AUDIO_CHANNELS) so a surround-capable client keeps 5.1/7.1.
+   */
+  downmixStereo?: boolean;
+  /**
+   * Channel count of the SELECTED source audio track (from ffprobe). Only
+   * consulted when downmixStereo is false, to decide whether to preserve a
+   * surround layout. Unknown/≤2 keeps the stereo baseline.
+   */
+  sourceChannels?: number;
   /** Segment length in seconds. Defaults to DEFAULT_HLS_SEGMENT_SECONDS. */
   segmentSeconds?: number;
   /**
@@ -107,6 +128,15 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   const { inputPath, quality, outputDir } = params;
   const rawAudioIndex = params.audioStreamIndex ?? 0;
   const audioIndex = Number.isInteger(rawAudioIndex) && rawAudioIndex >= 0 ? rawAudioIndex : 0;
+  // Downmix to stereo by default (universally safe). Only when the client opts
+  // out AND the source is genuinely surround do we preserve (a capped) channel
+  // count; anything unknown/≤2 stays stereo.
+  const downmixStereo = params.downmixStereo ?? true;
+  const rawChannels = params.sourceChannels;
+  const audioChannels =
+    !downmixStereo && Number.isInteger(rawChannels) && (rawChannels as number) > 2
+      ? Math.min(rawChannels as number, MAX_TRANSCODE_AUDIO_CHANNELS)
+      : 2;
   const segmentSeconds =
     params.segmentSeconds !== undefined && params.segmentSeconds > 0
       ? params.segmentSeconds
@@ -140,7 +170,7 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
     // file is transcoded).
     '-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`,
     '-c:a', 'aac',
-    '-ac', '2',
+    '-ac', String(audioChannels),
     '-b:a', quality.audioBitrate,
     '-f', 'hls',
     '-hls_time', String(segmentSeconds),
@@ -210,6 +240,10 @@ export interface HlsSession {
   readonly mediaFileId: string;
   readonly userId: string;
   readonly quality: HlsQualityName;
+  /** The selected audio-relative track index mapped as `-map 0:a:<index>`. */
+  readonly audioTrackIndex: number;
+  /** Whether audio was downmixed to stereo for this session. */
+  readonly downmixStereo: boolean;
   /** Absolute, containment-checked input path passed to ffmpeg. */
   readonly inputPath: string;
   /** Absolute scratch dir holding the playlist and segments. */
@@ -224,6 +258,8 @@ interface InternalSession {
   mediaFileId: string;
   userId: string;
   quality: HlsQualityName;
+  audioTrackIndex: number;
+  downmixStereo: boolean;
   inputPath: string;
   outputDir: string;
   createdAt: number;
@@ -244,6 +280,20 @@ export interface StartSessionParams {
   mediaFile: { id: string; path: string };
   quality: HlsQualityName;
   userId: string;
+  /**
+   * Audio-relative track index to map (`-map 0:a:<index>`). Validated to a
+   * non-negative integer; anything else falls back to the first audio track.
+   * Callers should pass an index already validated against the file's audio
+   * track count (the route does this via listAudioTracks/resolveAudioTrackIndex).
+   */
+  audioTrackIndex?: number;
+  /** Force a stereo downmix (client is stereo-only). Defaults to true. */
+  downmixStereo?: boolean;
+  /**
+   * Channel count of the selected source audio track. Only used to preserve a
+   * surround layout when downmixStereo is false.
+   */
+  audioChannels?: number;
 }
 
 export interface HlsSessionManagerOptions {
@@ -381,10 +431,26 @@ export class HlsSessionManager {
    * Rejects with TooManySessionsError (cap), HlsInputError (path missing or
    * outside the media roots), or HlsStartError (ffmpeg produced no playlist).
    */
-  async startSession({ mediaFile, quality, userId }: StartSessionParams): Promise<HlsSession> {
+  async startSession({
+    mediaFile,
+    quality,
+    userId,
+    audioTrackIndex,
+    downmixStereo,
+    audioChannels,
+  }: StartSessionParams): Promise<HlsSession> {
     if (this.stopped) throw new HlsStartError('session manager is shut down');
 
-    const dedupKey = `${userId} ${mediaFile.id} ${quality}`;
+    const resolvedAudioIndex =
+      audioTrackIndex !== undefined && Number.isInteger(audioTrackIndex) && audioTrackIndex >= 0
+        ? audioTrackIndex
+        : 0;
+    const resolvedDownmix = downmixStereo ?? true;
+
+    // audioTrackIndex + downmix change the produced audio, so they are part of
+    // the dedup identity: switching either must start a DISTINCT session
+    // rather than reuse one built for a different track.
+    const dedupKey = `${userId} ${mediaFile.id} ${quality} a${resolvedAudioIndex} d${resolvedDownmix ? 1 : 0}`;
     const existingId = this.byKey.get(dedupKey);
     if (existingId !== undefined) {
       const existing = this.sessions.get(existingId);
@@ -416,6 +482,9 @@ export class HlsSessionManager {
       quality: this.qualities[quality],
       outputDir,
       segmentSeconds: this.segmentSeconds,
+      audioStreamIndex: resolvedAudioIndex,
+      downmixStereo: resolvedDownmix,
+      sourceChannels: audioChannels,
     });
     const child = spawn(this.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     trackChild(child);
@@ -426,6 +495,8 @@ export class HlsSessionManager {
       mediaFileId: mediaFile.id,
       userId,
       quality,
+      audioTrackIndex: resolvedAudioIndex,
+      downmixStereo: resolvedDownmix,
       inputPath,
       outputDir,
       createdAt: nowMs,

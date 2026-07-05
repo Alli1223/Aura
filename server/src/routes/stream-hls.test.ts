@@ -13,6 +13,8 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { disconnectPrisma, getPrisma } from '../db/client.js';
 import { secretsFilePath } from '../lib/secrets.js';
+import { probeFile } from '../media/ffprobe.js';
+import { persistProbe } from '../media/persist-probe.js';
 import { issueStreamToken } from '../streaming/stream-tokens.js';
 
 // Integration tests for the HLS transcode routes against a real temporary
@@ -34,6 +36,7 @@ let mediaRoot: string;
 let moviesDir: string;
 let transcodeDir: string;
 let baseClip: string;
+let multiAudioClip: string;
 let prisma: PrismaClient;
 let app: FastifyInstance;
 let streamTokenSecret: string;
@@ -55,6 +58,23 @@ interface StartBody {
   sessionId: string;
   playlistUrl: string;
   quality: string;
+  audioTrackIndex: number;
+  downmixStereo: boolean;
+}
+
+interface AudioTrackBody {
+  index: number;
+  codec: string | null;
+  channels: number | null;
+  channelLayout: string | null;
+  language: string | null;
+  title: string | null;
+  default: boolean;
+  label: string;
+}
+interface AudioListBody {
+  mediaFileId: string;
+  tracks: AudioTrackBody[];
 }
 
 async function registerUser(): Promise<Session> {
@@ -120,6 +140,43 @@ async function grantedFixture(
   return { user, fixture, token };
 }
 
+/**
+ * Copies the two-audio-track mkv, seeds its rows AND persists its real ffprobe
+ * stream info (so the audio-list endpoint and audioTrack validation see two
+ * audio tracks: eng stereo [default] + jpn 5.1).
+ */
+async function createMultiAudioFixture(fileName: string): Promise<Fixture> {
+  const filePath = path.join(moviesDir, `${randomUUID().slice(0, 8)}-${fileName}`);
+  await copyFile(multiAudioClip, filePath);
+
+  const library = await prisma.library.create({
+    data: { name: `Library ${randomUUID().slice(0, 8)}`, type: 'movies' },
+  });
+  const item = await prisma.mediaItem.create({
+    data: { libraryId: library.id, type: 'movie', title: 'Dual Audio', sortTitle: 'dual audio' },
+  });
+  const file = await prisma.mediaFile.create({
+    data: {
+      mediaItemId: item.id,
+      path: filePath,
+      size: BigInt(1024),
+      mtimeMs: BigInt(Date.now()),
+    },
+  });
+  await persistProbe(file.id, await probeFile(filePath));
+  return { libraryId: library.id, mediaItemId: item.id, mediaFileId: file.id, filePath };
+}
+
+async function grantedMultiAudioFixture(
+  fileName: string,
+): Promise<{ user: Session; fixture: Fixture; token: string }> {
+  const user = await registerUser();
+  const fixture = await createMultiAudioFixture(fileName);
+  await grantAccess(user.id, fixture.libraryId);
+  const token = await tokenViaApi(user, fixture.mediaFileId);
+  return { user, fixture, token };
+}
+
 function startHls(
   mediaFileId: string,
   token: string | undefined,
@@ -136,6 +193,20 @@ async function startHlsOk(mediaFileId: string, token: string, quality = '480p'):
   const response = await startHls(mediaFileId, token, quality);
   expect(response.statusCode, response.body).toBe(200);
   return response.json<StartBody>();
+}
+
+/** POST /hls/:mediaFileId with an optional audio track + downmix selection. */
+function startHlsSelect(
+  mediaFileId: string,
+  token: string,
+  opts: { quality?: string; audioTrack?: number; downmixStereo?: boolean },
+): Promise<LightMyRequestResponse> {
+  const params = new URLSearchParams();
+  params.set('token', token);
+  params.set('quality', opts.quality ?? '480p');
+  if (opts.audioTrack !== undefined) params.set('audioTrack', String(opts.audioTrack));
+  if (opts.downmixStereo !== undefined) params.set('downmixStereo', String(opts.downmixStereo));
+  return app.inject({ method: 'POST', url: `/api/stream/hls/${mediaFileId}?${params.toString()}` });
 }
 
 beforeAll(async () => {
@@ -158,6 +229,25 @@ beforeAll(async () => {
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-ac', '2', '-shortest',
     baseClip,
+  ]);
+
+  // 5s clip with TWO audio tracks: a[0] English stereo (default) and a[1]
+  // Japanese 5.1 — the multi-audio fixture the audio-tracks tests select over.
+  multiAudioClip = path.join(tempDir, 'multi-audio.mkv');
+  // prettier-ignore
+  await execFileAsync(FFMPEG, [
+    '-y', '-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc=duration=5:size=480x360:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:duration=5',
+    '-map', '0:v:0', '-map', '1:a:0', '-map', '2:a:0',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ac:a:0', '2', '-ac:a:1', '6',
+    '-metadata:s:a:0', 'language=eng', '-metadata:s:a:0', 'title=English',
+    '-metadata:s:a:1', 'language=jpn', '-metadata:s:a:1', 'title=Japanese',
+    '-disposition:a:0', 'default', '-disposition:a:1', '0',
+    '-shortest',
+    multiAudioClip,
   ]);
 
   const databaseUrl = `file:${path.join(tempDir, 'test.db')}`;
@@ -410,6 +500,204 @@ describe('DELETE /api/stream/hls/:sessionId — stop', () => {
     const { sessionId } = await startHlsOk(fixture.mediaFileId, token);
     const response = await app.inject({ method: 'DELETE', url: `/api/stream/hls/${sessionId}` });
     expect(response.statusCode).toBe(401);
+  }, 60_000);
+});
+
+describe('GET /api/stream/audio/:mediaFileId — track listing', () => {
+  it('lists both audio tracks with correct index, language, channels, default & label', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('list.mkv');
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}?token=${encodeURIComponent(token)}`,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<AudioListBody>();
+    expect(body.mediaFileId).toBe(fixture.mediaFileId);
+    expect(body.tracks).toHaveLength(2);
+
+    const [eng, jpn] = body.tracks;
+    expect(eng).toMatchObject({
+      index: 0,
+      language: 'eng',
+      channels: 2,
+      channelLayout: 'Stereo',
+      default: true,
+      label: 'English Stereo (AAC)',
+    });
+    expect(jpn).toMatchObject({
+      index: 1,
+      language: 'jpn',
+      channels: 6,
+      channelLayout: '5.1',
+      default: false,
+      label: 'Japanese 5.1 (AAC)',
+    });
+  }, 60_000);
+
+  it('rejects a missing token with 401 TOKEN_INVALID', async () => {
+    const { fixture } = await grantedMultiAudioFixture('list-noauth.mkv');
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}`,
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json<ErrorBody>().error.code).toBe('TOKEN_INVALID');
+  }, 60_000);
+
+  it('rejects a token scoped to a different media file with 401', async () => {
+    const { user, fixture } = await grantedMultiAudioFixture('list-scope.mkv');
+    const other = await createMovieFixture('list-scope-other.mp4');
+    await grantAccess(user.id, other.libraryId);
+    const tokenForOther = await tokenViaApi(user, other.mediaFileId);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}?token=${encodeURIComponent(tokenForOther)}`,
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json<ErrorBody>().error.code).toBe('TOKEN_INVALID');
+  }, 60_000);
+
+  it('returns 403 ACCOUNT_DISABLED once the token user is disabled', async () => {
+    const { user, fixture, token } = await grantedMultiAudioFixture('list-disabled.mkv');
+    await prisma.user.update({ where: { id: user.id }, data: { isEnabled: false } });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}?token=${encodeURIComponent(token)}`,
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json<ErrorBody>().error.code).toBe('ACCOUNT_DISABLED');
+  }, 60_000);
+
+  it('cloaks an ungranted file behind a 404 identical to a nonexistent id', async () => {
+    const user = await registerUser(); // no grants
+    const fixture = await createMultiAudioFixture('list-cloak.mkv');
+
+    const ungranted = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}?token=${encodeURIComponent(mintToken(user.id, fixture.mediaFileId))}`,
+    });
+    const nonexistent = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/no-such-file?token=${encodeURIComponent(mintToken(user.id, 'no-such-file'))}`,
+    });
+    expect(ungranted.statusCode).toBe(404);
+    expect(nonexistent.statusCode).toBe(404);
+    expect(ungranted.body).toBe(nonexistent.body);
+  }, 60_000);
+
+  it('stops listing tracks the moment a grant is revoked (use-time re-check)', async () => {
+    const { user, fixture, token } = await grantedMultiAudioFixture('list-revoke.mkv');
+    await prisma.libraryAccess.deleteMany({
+      where: { userId: user.id, libraryId: fixture.libraryId },
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/stream/audio/${fixture.mediaFileId}?token=${encodeURIComponent(token)}`,
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json<ErrorBody>().error.code).toBe('NOT_FOUND');
+  }, 60_000);
+});
+
+describe('POST /api/stream/hls/:mediaFileId — audio selection', () => {
+  /** Stops a started session so no ffmpeg/scratch dir lingers between tests. */
+  async function stop(sessionId: string, token: string): Promise<void> {
+    await app.inject({
+      method: 'DELETE',
+      url: `/api/stream/hls/${sessionId}?token=${encodeURIComponent(token)}`,
+    });
+  }
+
+  it('reports the chosen audio track and downmix in the response', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-report.mkv');
+    const response = await startHlsSelect(fixture.mediaFileId, token, {
+      audioTrack: 1,
+      downmixStereo: false,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<StartBody>();
+    expect(body.audioTrackIndex).toBe(1);
+    expect(body.downmixStereo).toBe(false);
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('falls back to the default track when audioTrack is out of range or omitted', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-fallback.mkv');
+    // eng (index 0) is the container default.
+    const outOfRange = await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 99 });
+    expect(outOfRange.statusCode, outOfRange.body).toBe(200);
+    const body = outOfRange.json<StartBody>();
+    expect(body.audioTrackIndex).toBe(0);
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('rejects a malformed audioTrack with 400 VALIDATION', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-bad.mkv');
+    for (const bad of ['-1', 'abc', '1.5']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/stream/hls/${fixture.mediaFileId}?token=${encodeURIComponent(token)}&quality=480p&audioTrack=${bad}`,
+      });
+      expect(response.statusCode, bad).toBe(400);
+      expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+    }
+  }, 60_000);
+
+  it('starts DISTINCT sessions per audio track and reuses within the same track', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-dedup.mkv');
+    const first = (await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 0 })).json<StartBody>();
+    const second = (await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 })).json<StartBody>();
+    const secondAgain = (
+      await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 })
+    ).json<StartBody>();
+
+    // Different track => different session; identical request => same session.
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(secondAgain.sessionId).toBe(second.sessionId);
+
+    await stop(first.sessionId, token);
+    await stop(second.sessionId, token);
+  }, 90_000);
+
+  it('starts a DISTINCT session when only the downmix flag differs', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-downmix.mkv');
+    const stereo = (
+      await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1, downmixStereo: true })
+    ).json<StartBody>();
+    const surround = (
+      await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1, downmixStereo: false })
+    ).json<StartBody>();
+    expect(surround.sessionId).not.toBe(stereo.sessionId);
+
+    await stop(stereo.sessionId, token);
+    await stop(surround.sessionId, token);
+  }, 90_000);
+
+  it('transcodes the 2nd audio track into a serviceable playlist', async () => {
+    const { fixture, token } = await grantedMultiAudioFixture('sel-transcode.mkv');
+    const response = await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<StartBody>();
+    expect(body.audioTrackIndex).toBe(1);
+
+    const playlist = await app.inject({ method: 'GET', url: body.playlistUrl });
+    expect(playlist.statusCode).toBe(200);
+    expect(playlist.body).toContain('#EXTM3U');
+
+    const segmentName = playlist.body
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.endsWith('.ts'));
+    expect(segmentName).toBeDefined();
+    const segment = await app.inject({
+      method: 'GET',
+      url: `/api/stream/hls/${body.sessionId}/${segmentName}?token=${encodeURIComponent(token)}`,
+    });
+    expect(segment.statusCode).toBe(200);
+    expect(segment.rawPayload.length).toBeGreaterThan(0);
+
+    await stop(body.sessionId, token);
   }, 60_000);
 });
 
