@@ -247,7 +247,29 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
   };
 
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    const { status, body } = handle(String(input), init);
+    const url = String(input);
+    const path = new URL(url, 'http://localhost').pathname;
+
+    // Artwork endpoint: authenticated binary. Served here (not in `handle`,
+    // which is JSON-only) so AuthImage can turn it into a blob object URL.
+    if (/^\/api\/items\/[^/]+\/artwork\/(poster|backdrop)$/.test(path)) {
+      if (!hasBearer(init)) {
+        return Promise.resolve(
+          new Response(JSON.stringify(err('UNAUTHORIZED', 'Missing token')), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), {
+          status: 200,
+          headers: { 'Content-Type': 'image/webp' },
+        }),
+      );
+    }
+
+    const { status, body } = handle(url, init);
     if (status === 204 || body === undefined) {
       return Promise.resolve(new Response(null, { status }));
     }

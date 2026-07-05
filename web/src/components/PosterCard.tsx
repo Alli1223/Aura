@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 
 import { artworkSrc, type ArtworkSize, type MediaItem } from '../api/media';
+import { AuthImage } from './AuthImage';
 import { CheckIcon } from './Icons';
 import styles from './PosterCard.module.css';
 
@@ -61,12 +62,11 @@ export function PosterCard({ item, size = 'w400', loading = 'lazy' }: PosterCard
             <span className={styles.fallbackTitle}>{item.title}</span>
           </div>
         ) : (
-          <img
+          <AuthImage
             className={styles.image}
             src={src}
             alt={item.title}
             loading={loading}
-            decoding="async"
             onError={() => setImageFailed(true)}
           />
         )}

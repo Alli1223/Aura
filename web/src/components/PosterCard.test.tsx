@@ -1,10 +1,26 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { MediaItem } from '../api/media';
+import { setAccessToken } from '../api/client';
 import { makeItem } from '../test/mockApi';
 import { PosterCard } from './PosterCard';
+
+/** Minimal fetch stub for the artwork endpoint, so AuthImage can resolve. */
+function stubArtworkFetch(ok = true) {
+  const fetchMock = vi.fn(() =>
+    ok
+      ? Promise.resolve(
+          new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), {
+            status: 200,
+          }),
+        )
+      : Promise.resolve(new Response(null, { status: 404 })),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
 
 function renderCard(item: MediaItem) {
   return render(
@@ -15,7 +31,13 @@ function renderCard(item: MediaItem) {
 }
 
 describe('PosterCard', () => {
-  it('renders the lazy poster image and the title/year caption', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches the sized poster and renders it as a lazy image', async () => {
+    setAccessToken('tok');
+    const fetchMock = stubArtworkFetch();
     renderCard(
       makeItem({
         id: 'm1',
@@ -25,14 +47,21 @@ describe('PosterCard', () => {
       }),
     );
 
-    const img = screen.getByRole('img', { name: 'Inception' });
-    expect(img).toHaveAttribute('src', '/api/items/m1/artwork/poster?size=w400');
+    const img = await screen.findByRole('img', { name: 'Inception' });
+    // AuthImage renders the fetched blob as an object URL, not the raw path.
+    expect(img.getAttribute('src')).toMatch(/^blob:/);
     expect(img).toHaveAttribute('loading', 'lazy');
+    // The artwork request carried the size bucket and a bearer token.
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/items/m1/artwork/poster?size=w400',
+      expect.objectContaining({ credentials: 'include' }),
+    );
     expect(screen.getByText('Inception')).toBeInTheDocument();
     expect(screen.getByText('2010')).toBeInTheDocument();
   });
 
   it('links to the item detail route', () => {
+    stubArtworkFetch();
     renderCard(makeItem({ id: 'abc', title: 'Linked' }));
 
     expect(screen.getByRole('link', { name: /Linked/ })).toHaveAttribute('href', '/items/abc');
@@ -46,12 +75,15 @@ describe('PosterCard', () => {
     expect(screen.getAllByText('No Poster').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('falls back to the title tile when the poster image fails to load', () => {
+  it('falls back to the title tile when the poster image fails to load', async () => {
+    setAccessToken('tok');
+    stubArtworkFetch(false);
     renderCard(makeItem({ title: 'Broken', posterUrl: '/api/items/x/artwork/poster' }));
 
-    fireEvent.error(screen.getByRole('img'));
-
-    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    // The failed artwork fetch triggers onError → fallback tile (no <img>).
+    await waitFor(() => {
+      expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    });
     expect(screen.getAllByText('Broken').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -59,6 +91,7 @@ describe('PosterCard', () => {
     renderCard(
       makeItem({
         title: 'Seen',
+        posterUrl: null,
         watchState: {
           watched: true,
           positionMs: 0,
@@ -77,6 +110,7 @@ describe('PosterCard', () => {
     renderCard(
       makeItem({
         title: 'Partial',
+        posterUrl: null,
         runtimeMs: 100_000,
         watchState: {
           watched: false,
@@ -97,6 +131,7 @@ describe('PosterCard', () => {
       makeItem({
         title: 'A Show',
         type: 'show',
+        posterUrl: null,
         watchState: {
           watched: false,
           positionMs: 0,

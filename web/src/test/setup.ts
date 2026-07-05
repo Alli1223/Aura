@@ -25,6 +25,17 @@ if (!('IntersectionObserver' in globalThis)) {
     MockIntersectionObserver as unknown as typeof IntersectionObserver;
 }
 
+// jsdom has no URL.createObjectURL/revokeObjectURL; AuthImage turns a fetched
+// artwork blob into an object URL. Deterministic ids let tests assert an image
+// resolved without caring about the exact value.
+let objectUrlCounter = 0;
+if (typeof URL.createObjectURL !== 'function') {
+  URL.createObjectURL = () => `blob:mock/${(objectUrlCounter += 1)}`;
+}
+if (typeof URL.revokeObjectURL !== 'function') {
+  URL.revokeObjectURL = () => {};
+}
+
 // Each test starts from a clean slate: no in-memory token, no auth bridge, and
 // any stubbed globals (fetch) restored.
 beforeEach(() => {

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError, apiRequest, setAccessToken, setAuthBridge } from './client';
+import {
+  ApiError,
+  apiRequest,
+  fetchAuthedObjectUrl,
+  setAccessToken,
+  setAuthBridge,
+} from './client';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -113,5 +119,60 @@ describe('apiRequest', () => {
     expect(a).toEqual({ ok: true });
     expect(b).toEqual({ ok: true });
     expect(refreshCount).toBe(1);
+  });
+});
+
+function imageResponse(status = 200): Response {
+  return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/webp' }), { status });
+}
+
+describe('fetchAuthedObjectUrl', () => {
+  it('fetches a same-origin url with the bearer token and returns a blob object url', async () => {
+    setAccessToken('img-token');
+    const fetchMock = vi.fn<FetchImpl>(() => Promise.resolve(imageResponse()));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchAuthedObjectUrl('/api/items/m1/artwork/poster?size=w400');
+
+    expect(url).toMatch(/^blob:/);
+    const [calledUrl, init] = fetchMock.mock.calls[0] ?? [];
+    // The url is used verbatim (already includes the /api base) — not re-prefixed.
+    expect(calledUrl).toBe('/api/items/m1/artwork/poster?size=w400');
+    expect(authHeader(init)).toBe('Bearer img-token');
+    expect(init?.credentials).toBe('include');
+  });
+
+  it('refreshes once and retries on a 401', async () => {
+    setAccessToken('stale');
+    setAuthBridge({ onRefreshed: vi.fn(), onCleared: vi.fn() });
+    const fetchMock = vi.fn<FetchImpl>((url, init) => {
+      if (String(url).endsWith('/auth/refresh')) {
+        return Promise.resolve(jsonResponse(200, { user: { id: 'u1' }, accessToken: 'fresh' }));
+      }
+      if (authHeader(init) === 'Bearer fresh') return Promise.resolve(imageResponse());
+      return Promise.resolve(errorResponse(401, 'UNAUTHORIZED', 'expired'));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await fetchAuthedObjectUrl('/api/items/m1/artwork/poster');
+
+    expect(url).toMatch(/^blob:/);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/auth/refresh'))).toHaveLength(
+      1,
+    );
+  });
+
+  it('throws a typed ApiError when the resource is not available', async () => {
+    setAccessToken('tok');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<FetchImpl>(() => Promise.resolve(errorResponse(404, 'NOT_FOUND', 'gone'))),
+    );
+
+    const error = await fetchAuthedObjectUrl('/api/items/x/artwork/poster').catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
   });
 });
