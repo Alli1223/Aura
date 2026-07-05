@@ -59,7 +59,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 
 - [x] **web-shell** — App shell: routing, auth pages (login/register/first-run), session refresh handling, dark theme, responsive layout, sidebar with only-permitted libraries
 - [x] **library-browse** — Poster-grid browse per library with sort (title/year/added/rating) and filter (genre/year/watched) + pagination/virtualised grid
-- [ ] **image-auth** — Make the `GET /api/items/:id/artwork/:kind` route authenticatable by a plain `<img src>` (which can't send a Bearer header): accept the httpOnly session cookie (verify the JWT from the cookie) and/or a short-lived signed image token, still access-checked with the 404 cloak. Without this, posters 401 in the browser and fall back to title tiles
+- [x] **image-auth** — Make the `GET /api/items/:id/artwork/:kind` route authenticatable by a plain `<img src>` (which can't send a Bearer header): accept the httpOnly session cookie (verify the JWT from the cookie) and/or a short-lived signed image token, still access-checked with the 404 cloak. Without this, posters 401 in the browser and fall back to title tiles
 - [ ] **media-detail** — Movie detail page & show → seasons → episodes pages: artwork, synopsis, cast, stream/file info, play/resume buttons, mark (un)watched
 - [ ] **video-player** — hls.js player with custom controls: play/pause/seek/volume, quality selector, subtitle & audio track menus, fullscreen, keyboard shortcuts, auto-resume prompt, next-episode autoplay, progress reporting
 - [ ] **home-screen** — Home: Continue Watching, Recently Added per permitted library, On Deck (next unwatched episode)
