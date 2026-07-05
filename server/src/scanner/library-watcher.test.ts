@@ -17,7 +17,14 @@ vi.mock('./scan.js', () => ({
 }));
 
 import { disconnectPrisma, getPrisma } from '../db/client.js';
-import { LibraryWatcher, type WatchHandle, type WatcherFactory } from './library-watcher.js';
+import {
+  getActiveLibraryWatcher,
+  LibraryWatcher,
+  refreshLibraryWatcher,
+  setActiveLibraryWatcher,
+  type WatchHandle,
+  type WatcherFactory,
+} from './library-watcher.js';
 import { scanLibrary } from './scan.js';
 import { isScanning, resetScanStatesForTests, startScan } from './scan-manager.js';
 
@@ -372,4 +379,33 @@ describe('LibraryWatcher (real chokidar)', () => {
     await delay(600);
     expect(scan).not.toHaveBeenCalled();
   }, 15_000);
+});
+
+describe('refreshLibraryWatcher (process-wide accessor)', () => {
+  afterEach(() => {
+    setActiveLibraryWatcher(null);
+  });
+
+  it('is a no-op that never throws when no active watcher is set', async () => {
+    setActiveLibraryWatcher(null);
+    expect(getActiveLibraryWatcher()).toBeNull();
+    await expect(refreshLibraryWatcher()).resolves.toBeUndefined();
+  });
+
+  it('refreshes the registered active watcher', async () => {
+    const { factory } = fakeFactory();
+    const watcher = new LibraryWatcher({
+      mediaRoots: [mediaRoot],
+      scan: vi.fn(),
+      prisma,
+      watcherFactory: factory,
+    });
+    const refresh = vi.spyOn(watcher, 'refresh').mockResolvedValue(undefined);
+    setActiveLibraryWatcher(watcher);
+    expect(getActiveLibraryWatcher()).toBe(watcher);
+
+    await refreshLibraryWatcher();
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });
