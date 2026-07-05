@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -80,4 +81,49 @@ export async function validateLibraryPath(
   }
 
   return canonical;
+}
+
+/** Result of re-validating a stored media file path at serve time. */
+export type MediaFileResolution =
+  | { ok: true; canonicalPath: string; stats: Stats }
+  | { ok: false; reason: 'missing' | 'outside_roots' };
+
+/**
+ * Re-validates a stored media file path immediately before it is served.
+ * The filesystem may have changed since the scan, so the stored path is
+ * realpath-resolved fresh and its canonical form is checked for containment
+ * in the configured media roots — a symlink swapped in after scanning
+ * therefore cannot leak a file from outside the roots.
+ *
+ * Returns the canonical path callers must open (never the stored path — the
+ * canonical form is the one that was containment-checked) plus its fresh
+ * stats, or a typed rejection: `missing` when the path no longer resolves to
+ * a regular file, `outside_roots` when it resolves somewhere unsafe. Never
+ * throws for filesystem reasons.
+ */
+export async function resolveMediaFileForServing(
+  storedPath: string,
+  mediaRoots: readonly string[],
+): Promise<MediaFileResolution> {
+  let canonical: string;
+  try {
+    canonical = await realpath(storedPath);
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+
+  const roots = await resolveExistingRoots(mediaRoots);
+  if (!roots.some((root) => isPathWithin(canonical, root))) {
+    return { ok: false, reason: 'outside_roots' };
+  }
+
+  let stats: Stats;
+  try {
+    stats = await stat(canonical);
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+  if (!stats.isFile()) return { ok: false, reason: 'missing' };
+
+  return { ok: true, canonicalPath: canonical, stats };
 }
