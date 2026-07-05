@@ -112,8 +112,13 @@ function buildInit(options: RequestOptions, token: string | null): RequestInit {
 }
 
 async function rawFetch(path: string, init: RequestInit): Promise<Response> {
+  return rawFetchAbsolute(`${API_BASE}${path}`, init);
+}
+
+/** Like rawFetch but the url is taken verbatim (already includes the API base). */
+async function rawFetchAbsolute(url: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${API_BASE}${path}`, init);
+    return await fetch(url, init);
   } catch {
     throw new NetworkError();
   }
@@ -153,10 +158,18 @@ export function refreshSession(): Promise<AuthSession> {
 
 // ---- Core request -----------------------------------------------------------
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  let response = await rawFetch(path, buildInit(options, accessToken));
+/**
+ * Runs `doFetch` with the current access token and, on a 401, performs a single
+ * silent refresh and retries once. Shared by the JSON request path and the
+ * authenticated blob-URL fetch so both get identical session handling.
+ */
+async function withAuthRetry(
+  doFetch: (token: string | null) => Promise<Response>,
+  skipAuthRefresh: boolean,
+): Promise<Response> {
+  let response = await doFetch(accessToken);
 
-  if (response.status === 401 && !options.skipAuthRefresh) {
+  if (response.status === 401 && !skipAuthRefresh) {
     let session: AuthSession;
     try {
       session = await refreshSession();
@@ -165,11 +178,44 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       authBridge?.onCleared();
       throw new ApiError(401, 'UNAUTHORIZED', 'Your session has expired');
     }
-    response = await rawFetch(path, buildInit(options, session.accessToken));
+    response = await doFetch(session.accessToken);
   }
+
+  return response;
+}
+
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await withAuthRetry(
+    (token) => rawFetch(path, buildInit(options, token)),
+    options.skipAuthRefresh ?? false,
+  );
 
   if (!response.ok) {
     throw await parseError(response);
   }
   return parseBody<T>(response);
+}
+
+/**
+ * Fetches a same-origin, authenticated resource (e.g. an artwork endpoint that
+ * requires a Bearer token, which a plain `<img src>` cannot supply) and returns
+ * a blob object URL suitable for an `<img>`. Reuses the access token + the
+ * single-flight silent refresh. The caller MUST revoke the returned URL with
+ * `URL.revokeObjectURL` when done to avoid leaking memory.
+ *
+ * `url` is taken verbatim (it already starts with the `/api` base, as the
+ * server's posterUrl/backdropUrl fields do).
+ */
+export async function fetchAuthedObjectUrl(url: string): Promise<string> {
+  const response = await withAuthRetry((token) => {
+    const headers = new Headers();
+    if (token !== null) headers.set('Authorization', `Bearer ${token}`);
+    return rawFetchAbsolute(url, { headers, credentials: 'include' });
+  }, false);
+
+  if (!response.ok) {
+    throw await parseError(response);
+  }
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
 }
