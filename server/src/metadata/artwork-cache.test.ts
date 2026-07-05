@@ -220,13 +220,15 @@ describe('resolveArtwork anilist sources', () => {
   });
 
   it('fetches the exact AniList CDN URL carried by the URI (full-URL convention)', async () => {
-    const response = imageResponse(await pngBuffer(500, 750));
-    const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(response.clone()),
-    );
+    const png = await pngBuffer(500, 750);
+    let requestedUrl: unknown;
+    const fetchImpl = vi.fn((input: RequestInfo | URL) => {
+      requestedUrl = input;
+      return Promise.resolve(imageResponse(png));
+    });
     await resolveArtwork(ANILIST_URI, 'w400', options(fetchImpl as unknown as typeof fetch));
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]![0])).toBe(ANILIST_URL);
+    expect(String(requestedUrl)).toBe(ANILIST_URL); // full URL passed through unchanged
   });
 
   it('passes the original bytes through untouched for size=original', async () => {
