@@ -25,7 +25,14 @@ import type { AuthUser } from './types.js';
 // every non-granted id — existing or not — which likewise leaks nothing.
 
 const FORBIDDEN_LIBRARY_MESSAGE = 'You do not have access to this library';
-const ITEM_NOT_FOUND_MESSAGE = 'Media item not found';
+
+/**
+ * The one cloaking 404 message for media lookups. Exported so routes that
+ * resolve an id themselves (e.g. a MediaFile id) before calling
+ * assertMediaItemAccess can make their missing-id 404 byte-identical to the
+ * access-denied 404 — any difference would leak which ids exist.
+ */
+export const ITEM_NOT_FOUND_MESSAGE = 'Media item not found';
 
 function isActiveAdmin(user: AuthUser): boolean {
   return user.isEnabled && user.role === 'admin';
