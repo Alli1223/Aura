@@ -58,4 +58,26 @@ describe('AdminSettingsPage', () => {
     expect(body(lastCall(api, '/settings', 'PATCH'))).toEqual({ serverName: 'Renamed Aura' });
     expect(await screen.findByText('Settings saved.')).toBeInTheDocument();
   });
+
+  it('reports no changes when re-saving without further edits', async () => {
+    const api = renderSettings({ serverName: 'My Aura' });
+    const name = await screen.findByLabelText('Server name');
+    const patchCount = () =>
+      api.fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith('/settings') &&
+          (init?.method ?? 'GET').toUpperCase() === 'PATCH',
+      ).length;
+
+    fireEvent.change(name, { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await screen.findByText('Settings saved.');
+    const afterFirst = patchCount();
+    expect(afterFirst).toBe(1);
+
+    // The baseline advanced, so a second save with no edits is a no-op.
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(await screen.findByText('No changes to save.')).toBeInTheDocument();
+    expect(patchCount()).toBe(afterFirst);
+  });
 });

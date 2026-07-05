@@ -25,11 +25,12 @@ export function formatDateTime(iso: string | null): string {
 export function formatDuration(ms: number | null): string {
   if (ms === null) return '—';
   if (ms < 1000) return `${ms} ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  // Round to whole seconds first so the minute/second split can't produce "60s".
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 }
 
 /** Rough "every N" interval label for a task's schedule. */

@@ -41,6 +41,10 @@ function SettingsForm({ initial }: { initial: AdminSettings }) {
   const updateSettings = useUpdateSettings();
 
   const [form, setForm] = useState<AdminSettings>(initial);
+  // The saved baseline the form diffs against. Advances after each successful
+  // save so the "no changes" guard keeps working (a fresh `initial` prop won't
+  // re-seed the form's own useState).
+  const [baseline, setBaseline] = useState<AdminSettings>(initial);
   const [revealKey, setRevealKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -52,8 +56,8 @@ function SettingsForm({ initial }: { initial: AdminSettings }) {
 
   const buildPatch = (): SettingsPatch => {
     const patch: SettingsPatch = {};
-    (Object.keys(initial) as (keyof AdminSettings)[]).forEach((key) => {
-      if (form[key] !== initial[key]) {
+    (Object.keys(baseline) as (keyof AdminSettings)[]).forEach((key) => {
+      if (form[key] !== baseline[key]) {
         // Narrowing across the union is safe: same key on both objects.
         (patch as Record<string, unknown>)[key] = form[key];
       }
@@ -70,7 +74,11 @@ function SettingsForm({ initial }: { initial: AdminSettings }) {
       return;
     }
     updateSettings.mutate(patch, {
-      onSuccess: () => setSaved(true),
+      onSuccess: (settings) => {
+        setBaseline(settings);
+        setForm(settings);
+        setSaved(true);
+      },
       onError: (err) => setError(errorMessage(err)),
     });
   };
