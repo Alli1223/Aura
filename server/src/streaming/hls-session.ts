@@ -42,6 +42,19 @@ export {
 // root before ffmpeg is spawned (media roots are read-only). Every scratch
 // path is built from a server-generated session id (randomUUID), never from
 // user input.
+//
+// SEEK MODEL (transcode-seek, option A — per-offset session): seeking inside a
+// transcoded stream restarts the transcode window at the requested timestamp.
+// A session carries a `startOffsetSec`: when it is > 0, ffmpeg is given
+// `-ss <offset>` BEFORE `-i` (a fast input seek), so decoding begins at that
+// point in the SOURCE. The session's own playlist is still numbered from t=0 —
+// its first segment represents source content at `startOffsetSec`. The client
+// is told the granted offset and maps player-time -> session-time by
+// subtracting it (player wants T seconds -> fetch session time T-offset). A
+// different offset is a DISTINCT session (see the dedup key); the same offset
+// (bucketed to whole seconds) reuses one. When a user seeks, the manager
+// SUPERSEDES that user's previous different-offset session for the same file so
+// seek-spam cannot exhaust the concurrency cap (see startSession).
 
 /** Segment target duration (seconds). ffmpeg cuts a new segment at each. */
 export const DEFAULT_HLS_SEGMENT_SECONDS = 4;
@@ -111,6 +124,26 @@ export interface BuildHlsArgsParams {
   videoEncoder?: string;
   /** x264 preset. Defaults to "veryfast" (good speed/quality for live HLS). */
   preset?: string;
+  /**
+   * Input seek offset in seconds (transcode-seek). When > 0 and finite, emits
+   * `-ss <offset>` BEFORE `-i` so ffmpeg fast-seeks into the source and decoding
+   * begins there; the produced playlist is still numbered from t=0. Omitted, 0,
+   * negative, or non-finite means "transcode from the start" (no `-ss`). Callers
+   * should pass an already-clamped value (see clampStartOffset).
+   */
+  startOffsetSec?: number;
+}
+
+/**
+ * Formats a seconds value for ffmpeg's `-ss`: a plain fixed-point decimal
+ * (digits and at most one dot), never scientific notation, so nothing exotic
+ * can ever reach the argument array. Whole numbers stay integer-formatted;
+ * fractional values keep up to millisecond precision with trailing zeros
+ * trimmed. Callers guarantee the input is finite and >= 0.
+ */
+function formatSeconds(sec: number): string {
+  if (Number.isInteger(sec)) return String(sec);
+  return sec.toFixed(3).replace(/\.?0+$/, '');
 }
 
 /**
@@ -144,6 +177,14 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   const videoEncoder = params.videoEncoder ?? 'libx264';
   const preset = params.preset ?? 'veryfast';
 
+  // Transcode-seek: a positive, finite offset becomes a fast input seek placed
+  // BEFORE -i (so ffmpeg seeks the input rather than decoding-then-discarding).
+  const rawOffset = params.startOffsetSec;
+  const seekArgs =
+    rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset > 0
+      ? ['-ss', formatSeconds(rawOffset)]
+      : [];
+
   const playlistPath = path.join(outputDir, HLS_PLAYLIST_NAME);
   const segmentPath = path.join(outputDir, HLS_SEGMENT_PATTERN);
 
@@ -151,6 +192,9 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   return [
     '-nostdin',
     '-loglevel', 'error',
+    // -ss BEFORE -i is an input option: fast seek into the source. Must precede
+    // -i so it applies to the next input.
+    ...seekArgs,
     '-i', inputPath,
     // First video stream, plus the selected audio (the trailing "?" makes the
     // audio mapping optional so a video with no audio still transcodes).
@@ -181,6 +225,25 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
     '-hls_segment_filename', segmentPath,
     playlistPath,
   ];
+}
+
+/**
+ * Clamps a requested seek offset (seconds) to the half-open window
+ * [0, durationSec) that the source can actually serve. Returns the GRANTED
+ * offset the transcode will start at:
+ *  - undefined / non-finite / <= 0            -> 0 (transcode from the start);
+ *  - duration unknown (undefined / <= 0)      -> the requested offset unchanged;
+ *  - offset within the duration               -> the requested offset;
+ *  - offset at or past the end                -> capped to the duration.
+ * Pure and unit-tested; startSession calls it before spawning ffmpeg so the
+ * granted offset (echoed to the client) is always source-valid.
+ */
+export function clampStartOffset(requestedSec: number | undefined, durationSec?: number): number {
+  if (requestedSec === undefined || !Number.isFinite(requestedSec) || requestedSec <= 0) return 0;
+  if (durationSec !== undefined && Number.isFinite(durationSec) && durationSec > 0) {
+    return Math.min(requestedSec, durationSec);
+  }
+  return requestedSec;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +307,13 @@ export interface HlsSession {
   readonly audioTrackIndex: number;
   /** Whether audio was downmixed to stereo for this session. */
   readonly downmixStereo: boolean;
+  /**
+   * Granted input seek offset (seconds) this session's transcode began at (see
+   * the SEEK MODEL note at the top of this module). 0 means "from the start".
+   * The playlist is numbered from t=0; the client subtracts this to map
+   * player-time to session-time.
+   */
+  readonly startOffsetSec: number;
   /** Absolute, containment-checked input path passed to ffmpeg. */
   readonly inputPath: string;
   /** Absolute scratch dir holding the playlist and segments. */
@@ -260,6 +330,7 @@ interface InternalSession {
   quality: HlsQualityName;
   audioTrackIndex: number;
   downmixStereo: boolean;
+  startOffsetSec: number;
   inputPath: string;
   outputDir: string;
   createdAt: number;
@@ -277,7 +348,16 @@ interface InternalSession {
 }
 
 export interface StartSessionParams {
-  mediaFile: { id: string; path: string };
+  mediaFile: {
+    id: string;
+    path: string;
+    /**
+     * Source duration in seconds, when known (from ffprobe). Only used to clamp
+     * a seek offset into the servable window; omitted means "unknown", so the
+     * requested offset is passed through unclamped.
+     */
+    durationSec?: number;
+  };
   quality: HlsQualityName;
   userId: string;
   /**
@@ -294,6 +374,13 @@ export interface StartSessionParams {
    * surround layout when downmixStereo is false.
    */
   audioChannels?: number;
+  /**
+   * Requested seek offset in seconds (transcode-seek). Clamped to
+   * [0, durationSec) via clampStartOffset; the granted result feeds `-ss` and
+   * is bucketed to whole seconds in the dedup key. Omitted / <= 0 transcodes
+   * from the start.
+   */
+  startOffsetSec?: number;
 }
 
 export interface HlsSessionManagerOptions {
@@ -424,9 +511,15 @@ export class HlsSessionManager {
    * Starts (or reuses) a transcode session and resolves once its playlist is
    * serviceable (playlist file exists and lists at least one segment).
    *
-   * Reuse: an identical (userId, mediaFileId, quality) request that is still
-   * starting/ready returns the existing session (same id, same ffmpeg) instead
-   * of spawning a second process. Reuse is checked before the concurrency cap.
+   * Reuse: an identical request — same (userId, mediaFileId, quality, audio
+   * track, downmix, seek-offset-bucket) — that is still starting/ready returns
+   * the existing session (same id, same ffmpeg) instead of spawning a second
+   * process. Reuse is checked before the concurrency cap.
+   *
+   * Seek supersede: starting a DIFFERENT seek offset for the same (user, file)
+   * first stops that user's previous different-offset session for the file,
+   * freeing its slot (so a client seeking repeatedly cannot exhaust the cap).
+   * See supersedePriorOffsetSessions.
    *
    * Rejects with TooManySessionsError (cap), HlsInputError (path missing or
    * outside the media roots), or HlsStartError (ffmpeg produced no playlist).
@@ -438,6 +531,7 @@ export class HlsSessionManager {
     audioTrackIndex,
     downmixStereo,
     audioChannels,
+    startOffsetSec,
   }: StartSessionParams): Promise<HlsSession> {
     if (this.stopped) throw new HlsStartError('session manager is shut down');
 
@@ -447,10 +541,25 @@ export class HlsSessionManager {
         : 0;
     const resolvedDownmix = downmixStereo ?? true;
 
-    // audioTrackIndex + downmix change the produced audio, so they are part of
-    // the dedup identity: switching either must start a DISTINCT session
-    // rather than reuse one built for a different track.
-    const dedupKey = `${userId} ${mediaFile.id} ${quality} a${resolvedAudioIndex} d${resolvedDownmix ? 1 : 0}`;
+    // Clamp the requested seek into the source's servable window; the granted
+    // offset is what `-ss` uses and what is echoed to the client. The dedup key
+    // buckets it to whole seconds so sub-second differences reuse one session
+    // while a real seek starts a distinct one.
+    const grantedOffsetSec = clampStartOffset(startOffsetSec, mediaFile.durationSec);
+    const offsetBucket = Math.floor(grantedOffsetSec);
+
+    // audioTrackIndex, downmix AND the seek offset each change the produced
+    // stream, so all are part of the dedup identity: switching any must start a
+    // DISTINCT session rather than reuse one built differently. NUL-delimited so
+    // no field value can ever bleed into an adjacent one.
+    const dedupKey = [
+      userId,
+      mediaFile.id,
+      quality,
+      `a${resolvedAudioIndex}`,
+      `d${resolvedDownmix ? 1 : 0}`,
+      `o${offsetBucket}`,
+    ].join('\0');
     const existingId = this.byKey.get(dedupKey);
     if (existingId !== undefined) {
       const existing = this.sessions.get(existingId);
@@ -460,6 +569,12 @@ export class HlsSessionManager {
         return existing;
       }
     }
+
+    // Seek supersede (runs BEFORE the cap check so a freed slot is reusable):
+    // retire this user's other live sessions for THIS file that sit at a
+    // different offset bucket. Another user's sessions, and this user's sessions
+    // for other files or at the same offset, are left alone.
+    await this.supersedePriorOffsetSessions(userId, mediaFile.id, offsetBucket);
 
     if (this.activeCount >= this.maxSessions) {
       throw new TooManySessionsError(this.maxSessions);
@@ -485,6 +600,7 @@ export class HlsSessionManager {
       audioStreamIndex: resolvedAudioIndex,
       downmixStereo: resolvedDownmix,
       sourceChannels: audioChannels,
+      startOffsetSec: grantedOffsetSec,
     });
     const child = spawn(this.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     trackChild(child);
@@ -497,6 +613,7 @@ export class HlsSessionManager {
       quality,
       audioTrackIndex: resolvedAudioIndex,
       downmixStereo: resolvedDownmix,
+      startOffsetSec: grantedOffsetSec,
       inputPath,
       outputDir,
       createdAt: nowMs,
@@ -557,6 +674,29 @@ export class HlsSessionManager {
       if (now - session.lastAccess >= this.idleMs) stale.push(session.id);
     }
     await Promise.all(stale.map((id) => this.stopSession(id)));
+  }
+
+  /**
+   * Seek supersede: stops the given user's live sessions for `mediaFileId` whose
+   * seek offset bucket differs from `keepOffsetBucket`. Scoped strictly to the
+   * (user, file) pair — a DIFFERENT user's sessions, and the same user's
+   * sessions for other files or already at `keepOffsetBucket`, are never
+   * touched. This bounds a seeking client to one live transcode per file, so
+   * rapid seeks cannot ratchet the concurrency cap (HLS_MAX_SESSIONS) upward.
+   */
+  private async supersedePriorOffsetSessions(
+    userId: string,
+    mediaFileId: string,
+    keepOffsetBucket: number,
+  ): Promise<void> {
+    const toStop: string[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.userId !== userId || session.mediaFileId !== mediaFileId) continue;
+      if (session.state !== 'starting' && session.state !== 'ready') continue;
+      if (Math.floor(session.startOffsetSec) === keepOffsetBucket) continue;
+      toStop.push(session.id);
+    }
+    await Promise.all(toStop.map((id) => this.stopSession(id)));
   }
 
   /** Stops the reaper and every session. Call on server shutdown. */

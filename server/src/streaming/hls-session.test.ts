@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   buildHlsFfmpegArgs,
+  clampStartOffset,
   HLS_PLAYLIST_NAME,
   HLS_QUALITY_NAMES,
   HlsInputError,
@@ -219,6 +220,69 @@ describe('buildHlsFfmpegArgs', () => {
       expect(vf.startsWith("scale='min(iw,")).toBe(true);
     }
   });
+
+  // -- transcode-seek: -ss placement & formatting -------------------------
+
+  it('places -ss with the offset immediately BEFORE -i when startOffsetSec > 0', () => {
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 12 });
+    const ssIndex = args.indexOf('-ss');
+    const iIndex = args.indexOf('-i');
+    expect(ssIndex).toBeGreaterThanOrEqual(0);
+    // -ss is a fast INPUT seek: it must sit directly before -i (input option).
+    expect(args[ssIndex + 1]).toBe('12');
+    expect(ssIndex).toBeLessThan(iIndex);
+    expect(iIndex - ssIndex).toBe(2); // -ss <val> -i
+    // The input path still follows -i untouched.
+    expect(args[iIndex + 1]).toBe(base.inputPath);
+  });
+
+  it('formats a fractional offset as trimmed fixed-point (no scientific notation)', () => {
+    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 5.5 }), '-ss')).toBe('5.5');
+    // Whole numbers stay integer-formatted; sub-ms precision is trimmed.
+    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 90 }), '-ss')).toBe('90');
+    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 1.2345 }), '-ss')).toBe('1.234');
+  });
+
+  it('omits -ss entirely for offset 0, undefined, negative, or non-finite', () => {
+    for (const offset of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: offset });
+      expect(args.includes('-ss'), String(offset)).toBe(false);
+      // -i is still the very first input option after the global flags.
+      expect(args[args.indexOf('-i') + 1]).toBe(base.inputPath);
+    }
+  });
+
+  it('never injects shell metacharacters via the seek offset', () => {
+    const injection = /[;&|`$<>\n\r]/;
+    for (const offset of [7, 5.5, 123.456, 3600]) {
+      const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['1080p'], startOffsetSec: offset });
+      for (const arg of args) expect(injection.test(arg), JSON.stringify(arg)).toBe(false);
+    }
+  });
+});
+
+describe('clampStartOffset', () => {
+  it('returns 0 for an omitted, non-positive, or non-finite request', () => {
+    for (const req of [undefined, 0, -1, -0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(clampStartOffset(req, 100), String(req)).toBe(0);
+    }
+  });
+
+  it('passes a positive offset through when the duration is unknown', () => {
+    expect(clampStartOffset(42, undefined)).toBe(42);
+    expect(clampStartOffset(42, 0)).toBe(42);
+    expect(clampStartOffset(42.5, Number.NaN)).toBe(42.5);
+  });
+
+  it('keeps an offset that falls within the known duration', () => {
+    expect(clampStartOffset(30, 100)).toBe(30);
+    expect(clampStartOffset(99.9, 100)).toBe(99.9);
+  });
+
+  it('caps an offset at or beyond the end to the duration', () => {
+    expect(clampStartOffset(150, 100)).toBe(100);
+    expect(clampStartOffset(100, 100)).toBe(100);
+  });
 });
 
 describe('quality ladder', () => {
@@ -321,11 +385,20 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  const startClip = (manager: HlsSessionManager, over: Partial<{ userId: string; quality: '1080p' | '720p' | '480p'; id: string }> = {}) =>
+  const startClip = (
+    manager: HlsSessionManager,
+    over: Partial<{
+      userId: string;
+      quality: '1080p' | '720p' | '480p';
+      id: string;
+      startOffsetSec: number;
+    }> = {},
+  ) =>
     manager.startSession({
       mediaFile: { id: over.id ?? 'file-1', path: clipPath },
       quality: over.quality ?? '480p',
       userId: over.userId ?? 'user-1',
+      startOffsetSec: over.startOffsetSec,
     });
 
   it('starts a session that resolves once a playlist and >=1 segment exist', async () => {
@@ -424,6 +497,77 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     await expect(manager.stopSession(session.id)).resolves.toBeUndefined();
     await expect(manager.stopSession('nope')).resolves.toBeUndefined();
   }, 60_000);
+
+  it('starts a seeked session (-ss) that yields a serviceable playlist + segment', async () => {
+    const manager = makeManager();
+    const session = await startClip(manager, { startOffsetSec: 2 });
+
+    expect(session.state).toBe('ready');
+    expect(session.startOffsetSec).toBe(2);
+    const playlist = await readFile(path.join(session.outputDir, HLS_PLAYLIST_NAME), 'utf8');
+    expect(playlist).toContain('#EXTM3U');
+    expect(segmentsInPlaylist(playlist).length).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+
+  it('reuses one session for the same offset and starts a DISTINCT one per offset', async () => {
+    const manager = makeManager();
+    const first = await startClip(manager, { startOffsetSec: 1 });
+    const same = await startClip(manager, { startOffsetSec: 1 });
+    const other = await startClip(manager, { startOffsetSec: 3 });
+
+    // Same offset => reuse (same id, same dir); different offset => distinct.
+    expect(same.id).toBe(first.id);
+    expect(other.id).not.toBe(first.id);
+    // The zero-offset (default) start is distinct from any seeked one, too.
+    const zero = await startClip(manager, {});
+    expect(zero.id).not.toBe(first.id);
+    expect(zero.id).not.toBe(other.id);
+  }, 90_000);
+
+  it('buckets sub-second offsets to whole seconds for dedup', async () => {
+    const manager = makeManager();
+    const a = await startClip(manager, { startOffsetSec: 2.2 });
+    const b = await startClip(manager, { startOffsetSec: 2.8 });
+    const c = await startClip(manager, { startOffsetSec: 3.0 });
+
+    // 2.2 and 2.8 both bucket to whole-second 2 => reuse; 3.0 is a new bucket.
+    expect(b.id).toBe(a.id);
+    expect(c.id).not.toBe(a.id);
+  }, 90_000);
+
+  it('supersedes a user\'s prior different-offset session, leaving another user untouched', async () => {
+    const manager = makeManager();
+    // Two users watching the SAME file at offset 0.
+    const a0 = await startClip(manager, { userId: 'alice', id: 'file-shared', startOffsetSec: 0 });
+    const b0 = await startClip(manager, { userId: 'bob', id: 'file-shared', startOffsetSec: 0 });
+    expect(manager.activeCount).toBe(2);
+
+    // Alice seeks: her offset-0 session is retired (freeing the slot); Bob's is not.
+    const a5 = await startClip(manager, { userId: 'alice', id: 'file-shared', startOffsetSec: 5 });
+
+    expect(manager.getSession(a0.id)).toBeUndefined();
+    expect(existsSync(a0.outputDir)).toBe(false); // scratch dir cleaned
+    expect(manager.getSession(b0.id)).toBeDefined(); // other user untouched
+    expect(existsSync(b0.outputDir)).toBe(true);
+    expect(manager.getSession(a5.id)).toBeDefined();
+    // Alice still holds exactly one slot; total active is Bob + Alice's new one.
+    expect(manager.activeCount).toBe(2);
+  }, 90_000);
+
+  it('supersede frees a slot so a seek does not trip the concurrency cap', async () => {
+    const manager = makeManager({ maxSessions: 2 });
+    // Fill the cap: one for Bob, one for Alice (both at offset 0).
+    await startClip(manager, { userId: 'bob', id: 'file-b', startOffsetSec: 0 });
+    const aliceStart = await startClip(manager, { userId: 'alice', id: 'file-a', startOffsetSec: 0 });
+    expect(manager.activeCount).toBe(2);
+
+    // Alice seeks her file: her old session is superseded first, so this fits
+    // under the cap instead of throwing TooManySessionsError.
+    const aliceSeek = await startClip(manager, { userId: 'alice', id: 'file-a', startOffsetSec: 4 });
+    expect(aliceSeek.id).not.toBe(aliceStart.id);
+    expect(manager.getSession(aliceStart.id)).toBeUndefined();
+    expect(manager.activeCount).toBe(2);
+  }, 90_000);
 
   it('rejects an input path outside the media roots with HlsInputError', async () => {
     const manager = makeManager();

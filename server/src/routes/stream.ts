@@ -451,6 +451,29 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
   }
 
   /**
+   * Optional transcode-seek offset for an HLS start, accepted on the query
+   * string or the JSON body (query wins). `startOffset` is a non-negative,
+   * finite number of seconds into the SOURCE where the transcode should begin.
+   * Omitted means "from the start"; a negative, non-finite or otherwise
+   * malformed value is a 400. The session manager clamps the granted offset to
+   * the file's duration and echoes it back.
+   */
+  const startOffsetSchema = z.object({
+    startOffset: z.coerce.number().finite().nonnegative().optional(),
+  });
+
+  /** Parses the seek offset from query/body; a malformed value is a 400. */
+  function parseStartOffset(request: FastifyRequest): number | undefined {
+    const query = typeof request.query === 'object' && request.query !== null ? request.query : {};
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    const parsed = startOffsetSchema.safeParse({ ...body, ...query });
+    if (!parsed.success) {
+      throw new ApiError(400, 'VALIDATION', 'Invalid start offset');
+    }
+    return parsed.data.startOffset;
+  }
+
+  /**
    * Starts (or reuses) an HLS transcode session for a media file and returns
    * the playlist URL. Auth chain runs before any transcode work: token verify,
    * token-scoped-to-this-file, fresh user, file exists, library access.
@@ -462,6 +485,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
 
     const requestedQuality = parseRequestedQuality(request.query);
     const { audioTrack: requestedAudioTrack, downmixStereo } = parseAudioSelection(request);
+    const requestedStartOffset = parseStartOffset(request);
     // Resolve the requested rung (or the server default) and clamp it to the
     // user's effective cap — SERVER-SIDE, so a capped user who asks for a higher
     // rung is downgraded to the highest they are allowed. Never trust the client.
@@ -478,6 +502,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
         id: true,
         mediaItemId: true,
         path: true,
+        durationMs: true,
         streams: {
           where: { type: 'audio' },
           select: {
@@ -511,15 +536,21 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     const audioTrackIndex = resolveAudioTrackIndex(audioTracks, requestedAudioTrack);
     const selectedAudioChannels = audioTracks[audioTrackIndex]?.channels;
 
+    // Duration (from ffprobe, ms) lets the session manager clamp a seek offset
+    // into the servable window. Unknown/null duration => passed through unclamped.
+    const durationSec =
+      file.durationMs !== null && file.durationMs > 0 ? file.durationMs / 1000 : undefined;
+
     let session;
     try {
       session = await hls.startSession({
-        mediaFile: { id: file.id, path: file.path },
+        mediaFile: { id: file.id, path: file.path, durationSec },
         quality,
         userId: user.id,
         audioTrackIndex,
         downmixStereo,
         audioChannels: selectedAudioChannels,
+        startOffsetSec: requestedStartOffset,
       });
     } catch (err) {
       if (err instanceof HlsInputError) {
@@ -551,13 +582,17 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     // Echo the granted quality so the UI reflects the actually-started rung
     // (which may be lower than requested when the user is capped), plus the
     // audio track that was actually selected (the resolved audio-relative index)
-    // and whether the audio was downmixed to stereo.
+    // and whether the audio was downmixed to stereo. `startOffsetSec` is the
+    // GRANTED seek offset (clamped to the source duration): the session's
+    // playlist starts at t=0, so the player maps player-time to session-time by
+    // subtracting this value.
     return reply.send({
       sessionId: session.id,
       playlistUrl,
       quality: session.quality,
       audioTrackIndex: session.audioTrackIndex,
       downmixStereo: session.downmixStereo,
+      startOffsetSec: session.startOffsetSec,
     });
   });
 

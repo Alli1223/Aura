@@ -36,6 +36,7 @@ let mediaRoot: string;
 let moviesDir: string;
 let transcodeDir: string;
 let baseClip: string;
+let longClip: string;
 let multiAudioClip: string;
 let prisma: PrismaClient;
 let app: FastifyInstance;
@@ -60,6 +61,7 @@ interface StartBody {
   quality: string;
   audioTrackIndex: number;
   downmixStereo: boolean;
+  startOffsetSec: number;
 }
 
 interface AudioTrackBody {
@@ -177,6 +179,44 @@ async function grantedMultiAudioFixture(
   return { user, fixture, token };
 }
 
+/**
+ * Copies the ~10s clip to a unique path, seeds rows AND persists its real
+ * ffprobe info (so durationMs is populated and seek-offset clamping has a real
+ * duration to work against). Used by the transcode-seek tests, which need a
+ * clip long enough that a ~5s seek is well before EOF.
+ */
+async function createLongMovieFixture(fileName: string): Promise<Fixture> {
+  const filePath = path.join(moviesDir, `${randomUUID().slice(0, 8)}-${fileName}`);
+  await copyFile(longClip, filePath);
+
+  const library = await prisma.library.create({
+    data: { name: `Library ${randomUUID().slice(0, 8)}`, type: 'movies' },
+  });
+  const item = await prisma.mediaItem.create({
+    data: { libraryId: library.id, type: 'movie', title: 'Long Movie', sortTitle: 'long movie' },
+  });
+  const file = await prisma.mediaFile.create({
+    data: {
+      mediaItemId: item.id,
+      path: filePath,
+      size: BigInt(1024),
+      mtimeMs: BigInt(Date.now()),
+    },
+  });
+  await persistProbe(file.id, await probeFile(filePath));
+  return { libraryId: library.id, mediaItemId: item.id, mediaFileId: file.id, filePath };
+}
+
+async function grantedLongFixture(
+  fileName: string,
+): Promise<{ user: Session; fixture: Fixture; token: string }> {
+  const user = await registerUser();
+  const fixture = await createLongMovieFixture(fileName);
+  await grantAccess(user.id, fixture.libraryId);
+  const token = await tokenViaApi(user, fixture.mediaFileId);
+  return { user, fixture, token };
+}
+
 function startHls(
   mediaFileId: string,
   token: string | undefined,
@@ -185,6 +225,19 @@ function startHls(
   const params = new URLSearchParams();
   if (token !== undefined) params.set('token', token);
   if (quality !== undefined) params.set('quality', quality);
+  return app.inject({ method: 'POST', url: `/api/stream/hls/${mediaFileId}?${params.toString()}` });
+}
+
+/** POST /hls/:mediaFileId with an optional seek offset (seconds). */
+function startHlsSeek(
+  mediaFileId: string,
+  token: string,
+  opts: { quality?: string; startOffset?: number | string },
+): Promise<LightMyRequestResponse> {
+  const params = new URLSearchParams();
+  params.set('token', token);
+  params.set('quality', opts.quality ?? '480p');
+  if (opts.startOffset !== undefined) params.set('startOffset', String(opts.startOffset));
   return app.inject({ method: 'POST', url: `/api/stream/hls/${mediaFileId}?${params.toString()}` });
 }
 
@@ -229,6 +282,19 @@ beforeAll(async () => {
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-ac', '2', '-shortest',
     baseClip,
+  ]);
+
+  longClip = path.join(tempDir, 'long-clip.mp4');
+  // ~10s clip so a ~5s seek lands well before EOF (transcode-seek tests).
+  // prettier-ignore
+  await execFileAsync(FFMPEG, [
+    '-y', '-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc=duration=10:size=480x360:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=10',
+    '-map', '0:v:0', '-map', '1:a:0',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ac', '2', '-shortest',
+    longClip,
   ]);
 
   // 5s clip with TWO audio tracks: a[0] English stereo (default) and a[1]
@@ -392,6 +458,115 @@ describe('POST /api/stream/hls/:mediaFileId — session start', () => {
 
     await app.inject({ method: 'DELETE', url: body.playlistUrl.replace('/index.m3u8', '') });
   }, 60_000);
+});
+
+describe('POST /api/stream/hls/:mediaFileId — transcode-seek (startOffset)', () => {
+  /** Stops a started session so no ffmpeg/scratch dir lingers between tests. */
+  async function stop(sessionId: string, token: string): Promise<void> {
+    await app.inject({
+      method: 'DELETE',
+      url: `/api/stream/hls/${sessionId}?token=${encodeURIComponent(token)}`,
+    });
+  }
+
+  it('defaults to a full transcode (startOffsetSec 0) when no offset is given', async () => {
+    const { fixture, token } = await grantedFixture('seek-none.mp4');
+    const body = await startHlsOk(fixture.mediaFileId, token);
+    expect(body.startOffsetSec).toBe(0);
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('accepts startOffset, echoes the granted value, and serves a valid playlist', async () => {
+    const { fixture, token } = await grantedLongFixture('seek-ok.mp4');
+    const response = await startHlsSeek(fixture.mediaFileId, token, { startOffset: 5 });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<StartBody>();
+    expect(body.startOffsetSec).toBe(5);
+
+    // The seeked session produces a serviceable playlist with >=1 segment.
+    const playlist = await app.inject({ method: 'GET', url: body.playlistUrl });
+    expect(playlist.statusCode).toBe(200);
+    expect(playlist.body).toContain('#EXTM3U');
+    const segmentName = playlist.body
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.endsWith('.ts'));
+    expect(segmentName).toBeDefined();
+    const segment = await app.inject({
+      method: 'GET',
+      url: `/api/stream/hls/${body.sessionId}/${segmentName}?token=${encodeURIComponent(token)}`,
+    });
+    expect(segment.statusCode).toBe(200);
+    expect(segment.rawPayload.length).toBeGreaterThan(0);
+
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('accepts a fractional startOffset', async () => {
+    const { fixture, token } = await grantedLongFixture('seek-frac.mp4');
+    const response = await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2.5 });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<StartBody>();
+    expect(body.startOffsetSec).toBe(2.5);
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('rejects a negative or malformed startOffset with 400 VALIDATION', async () => {
+    const { fixture, token } = await grantedLongFixture('seek-bad.mp4');
+    for (const bad of ['-1', '-0.5', 'abc', 'NaN', 'Infinity']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/stream/hls/${fixture.mediaFileId}?token=${encodeURIComponent(token)}&quality=480p&startOffset=${bad}`,
+      });
+      expect(response.statusCode, bad).toBe(400);
+      expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+    }
+  }, 60_000);
+
+  it('reuses within the same offset, then starts a DISTINCT session per offset', async () => {
+    const { fixture, token } = await grantedLongFixture('seek-dedup.mp4');
+    // Same offset repeated (no intervening different offset) reuses one session.
+    const first = (await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2 })).json<StartBody>();
+    const firstAgain = (
+      await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2 })
+    ).json<StartBody>();
+    expect(firstAgain.sessionId).toBe(first.sessionId);
+
+    // A different offset is a distinct session (and supersedes the offset-2 one).
+    const other = (await startHlsSeek(fixture.mediaFileId, token, { startOffset: 6 })).json<StartBody>();
+    expect(other.sessionId).not.toBe(first.sessionId);
+
+    await stop(other.sessionId, token);
+  }, 90_000);
+
+  it('supersedes the seeking user\'s prior session but not another user\'s', async () => {
+    // Alice and Bob both watch the SAME file (both granted to its library).
+    const { fixture, token: aliceToken } = await grantedLongFixture('seek-super.mp4');
+    const bob = await registerUser();
+    await grantAccess(bob.id, fixture.libraryId);
+    const bobToken = await tokenViaApi(bob, fixture.mediaFileId);
+
+    const aliceFirst = await startHlsOk(fixture.mediaFileId, aliceToken); // offset 0
+    const bobSession = await startHlsOk(fixture.mediaFileId, bobToken); // offset 0
+    // Sanity: both playlists serve before the seek.
+    expect((await app.inject({ method: 'GET', url: aliceFirst.playlistUrl })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: bobSession.playlistUrl })).statusCode).toBe(200);
+
+    // Alice seeks: her offset-0 session is superseded (freed); Bob's is untouched.
+    const aliceSeek = (
+      await startHlsSeek(fixture.mediaFileId, aliceToken, { startOffset: 5 })
+    ).json<StartBody>();
+    expect(aliceSeek.sessionId).not.toBe(aliceFirst.sessionId);
+    expect(aliceSeek.startOffsetSec).toBe(5);
+
+    const aliceOldGone = await app.inject({ method: 'GET', url: aliceFirst.playlistUrl });
+    expect(aliceOldGone.statusCode).toBe(404); // stopped + scratch dir cleaned
+    const bobStillServes = await app.inject({ method: 'GET', url: bobSession.playlistUrl });
+    expect(bobStillServes.statusCode).toBe(200); // other user's session survives
+
+    await stop(aliceSeek.sessionId, aliceToken);
+    await stop(bobSession.sessionId, bobToken);
+  }, 90_000);
 });
 
 describe('GET /api/stream/hls/:sessionId/:file — playlist & segments', () => {
