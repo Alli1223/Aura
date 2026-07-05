@@ -54,7 +54,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 
 ## Phase 4 — Web App
 
-- [ ] **web-shell** — App shell: routing, auth pages (login/register/first-run), session refresh handling, dark theme, responsive layout, sidebar with only-permitted libraries
+- [x] **web-shell** — App shell: routing, auth pages (login/register/first-run), session refresh handling, dark theme, responsive layout, sidebar with only-permitted libraries
 - [ ] **library-browse** — Poster-grid browse per library with sort (title/year/added/rating) and filter (genre/year/watched) + pagination/virtualised grid
 - [ ] **media-detail** — Movie detail page & show → seasons → episodes pages: artwork, synopsis, cast, stream/file info, play/resume buttons, mark (un)watched
 - [ ] **video-player** — hls.js player with custom controls: play/pause/seek/volume, quality selector, subtitle & audio track menus, fullscreen, keyboard shortcuts, auto-resume prompt, next-episode autoplay, progress reporting
