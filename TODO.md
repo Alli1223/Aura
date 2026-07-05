@@ -47,7 +47,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **direct-play** — Range-request file streaming endpoint with library-access + path-safety enforcement; content-type mapping
 - [x] **playback-decision** — Decision engine: client reports capabilities, server picks direct play vs transcode (container remux vs full transcode) per video/audio stream
 - [x] **hls-transcoder** — ffmpeg HLS session manager: spawn with arg-array only, segment output to per-session scratch dir, playlist generation, session keepalive/timeout, cleanup on stop/disconnect, concurrent session limits
-- [ ] **transcode-seek** — Seeking within transcoded content (segment-window restarts at requested timestamp)
+- [x] **transcode-seek** — Seeking within transcoded content (segment-window restarts at requested timestamp)
 - [x] **quality-ladder** — User-selectable quality levels (e.g. original/1080p/720p/480p + bitrates); admin-configurable defaults & per-user max quality
 - [x] **subtitles** — Extract embedded subtitle tracks, discover external .srt/.ass, convert to WebVTT for web playback, burn-in path for image-based subs (PGS/VOBSUB)
 - [ ] **subtitle-burn-in** — Burn image-based subtitle tracks (PGS/HDMV, VOBSUB/DVD, DVB) into the video via the HLS transcoder when a client selects one — these cannot be converted to WebVTT, so the subtitles module surfaces them with `kind: 'image'` and the player must request a burn-in transcode. Depends on `subtitles` + `hls-transcoder`
