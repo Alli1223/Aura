@@ -1,5 +1,5 @@
 import { Prisma, type Library, type LibraryPath } from '@prisma/client';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
 import { canAccessLibrary, getAccessibleLibraryIds } from '../auth/access.js';
@@ -10,6 +10,7 @@ import { writeAuditLog } from '../lib/audit.js';
 import { ApiError, sendError } from '../lib/errors.js';
 import { validateLibraryPath } from '../lib/media-roots.js';
 import { parseBody, parseParams } from '../lib/validation.js';
+import { refreshLibraryWatcher } from '../scanner/library-watcher.js';
 
 // Library management. Reads are available to every authenticated user but
 // scoped to the libraries they can access (admins see all); writes are
@@ -133,6 +134,20 @@ async function assertPathsAvailable(
   }
 }
 
+/**
+ * Fire-and-forget refresh of the process-wide filesystem watcher after a
+ * library mutation, so it starts/stops tracking new/removed paths immediately
+ * instead of waiting for the next periodic rescan. Never blocks or fails the
+ * HTTP response: the (possibly slow) re-sync is detached and any error is
+ * logged, never thrown. A safe no-op when no watcher is running (NODE_ENV=test,
+ * WATCH_ENABLED=false, or before startup wiring sets one).
+ */
+function scheduleWatcherRefresh(log: FastifyBaseLogger): void {
+  void refreshLibraryWatcher().catch((err: unknown) => {
+    log.error({ err }, 'library-watcher: refresh after library mutation failed');
+  });
+}
+
 export const libraryRoutes: FastifyPluginAsync<LibraryRoutesOptions> = async (app, opts) => {
   const prisma = getPrisma();
   const mediaRoots = opts.config.MEDIA_ROOTS;
@@ -204,6 +219,9 @@ export const libraryRoutes: FastifyPluginAsync<LibraryRoutesOptions> = async (ap
       },
       request.log,
     );
+
+    // Watch the new library's paths now, not at the next periodic rescan.
+    scheduleWatcherRefresh(request.log);
 
     return reply.status(201).send({ library: toLibraryResponse(created) });
   });
@@ -277,6 +295,9 @@ export const libraryRoutes: FastifyPluginAsync<LibraryRoutesOptions> = async (ap
       request.log,
     );
 
+    // Only a path change alters what the watcher tracks; a rename does not.
+    if (paths !== undefined) scheduleWatcherRefresh(request.log);
+
     return reply.send({ library: toLibraryResponse(updated) });
   });
 
@@ -312,6 +333,9 @@ export const libraryRoutes: FastifyPluginAsync<LibraryRoutesOptions> = async (ap
       },
       request.log,
     );
+
+    // Stop watching the removed library's paths immediately.
+    scheduleWatcherRefresh(request.log);
 
     return reply.status(204).send();
   });

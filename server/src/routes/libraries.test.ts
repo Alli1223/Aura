@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 
 import type { PrismaClient } from '@prisma/client';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../app.js';
 import { disconnectPrisma, getPrisma } from '../db/client.js';
+import { setActiveLibraryWatcher, type LibraryWatcher } from '../scanner/library-watcher.js';
 
 // Integration tests for the library management API against a real temporary
 // SQLite database and a real temporary MEDIA_ROOTS directory tree (including
@@ -536,5 +537,74 @@ describe('DELETE /api/libraries/:id', () => {
     const response = await api('DELETE', '/api/libraries/no-such-library', admin.accessToken);
     expect(response.statusCode).toBe(404);
     expect(response.json<ErrorBody>().error.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('filesystem watcher refresh on mutation', () => {
+  // Inject a fake process-wide watcher so we can assert the routes ask it to
+  // re-sync after a successful mutation without standing up real chokidar.
+  let refresh: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    refresh = vi.fn().mockResolvedValue(undefined);
+    setActiveLibraryWatcher({ refresh } as unknown as LibraryWatcher);
+  });
+
+  afterEach(() => {
+    setActiveLibraryWatcher(null); // never leak the fake watcher into other tests
+  });
+
+  it('refreshes the watcher after creating a library', async () => {
+    await createLibrary();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the watcher after a path change but not after a rename', async () => {
+    const library = await createLibrary();
+    refresh.mockClear();
+
+    // Rename only: the set of watched paths is unchanged, so no refresh.
+    const rename = await api('PATCH', `/api/libraries/${library.id}`, admin.accessToken, {
+      name: libraryName(),
+    });
+    expect(rename.statusCode).toBe(200);
+    expect(refresh).not.toHaveBeenCalled();
+
+    // Path replacement: the watcher must pick up the new roots immediately.
+    const repathed = await api('PATCH', `/api/libraries/${library.id}`, admin.accessToken, {
+      paths: [await makeMediaDir()],
+    });
+    expect(repathed.statusCode).toBe(200);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the watcher after deleting a library', async () => {
+    const library = await createLibrary();
+    refresh.mockClear();
+
+    const response = await api('DELETE', `/api/libraries/${library.id}`, admin.accessToken);
+    expect(response.statusCode).toBe(204);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh the watcher when a mutation fails validation', async () => {
+    const library = await createLibrary();
+    refresh.mockClear();
+
+    // Invalid create (path outside the media roots) → 400, no refresh.
+    const badCreate = await api('POST', '/api/libraries', admin.accessToken, {
+      name: libraryName(),
+      type: 'movies',
+      paths: [outsideDir],
+    });
+    expect(badCreate.statusCode).toBe(400);
+
+    // Invalid path replacement → 400, DB unchanged, no refresh.
+    const badPatch = await api('PATCH', `/api/libraries/${library.id}`, admin.accessToken, {
+      paths: [outsideDir],
+    });
+    expect(badPatch.statusCode).toBe(400);
+
+    expect(refresh).not.toHaveBeenCalled();
   });
 });
