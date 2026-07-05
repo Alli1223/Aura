@@ -169,6 +169,20 @@ describe('decidePlayback — transcode reasons', () => {
     expect(decision.quality).toBe('480p');
   });
 
+  it('clamps the transcode quality to a per-user maxQuality cap', () => {
+    // A 4K source for a 1080p client would transcode to 1080p, but a user capped
+    // at 480p must never be handed anything above 480p.
+    const decision = decidePlayback({
+      file: directFile({ width: 3840, height: 2160 }),
+      streams: [video('h264'), audio('aac')],
+      client: webBrowserProfile(),
+      maxQuality: '480p',
+    });
+    expect(decision.action).toBe('transcode');
+    expect(decision.transcodeReason).toBe('resolution');
+    expect(decision.quality).toBe('480p');
+  });
+
   it('reports every failing check in reasons and transcodeReasons (precedence-ordered)', () => {
     const decision = decidePlayback({
       file: directFile({
@@ -300,7 +314,29 @@ describe('chooseTranscodeQuality', () => {
   });
 
   it('floors at the smallest rung when limits are below it', () => {
-    expect(chooseTranscodeQuality({ sourceWidth: 320, sourceHeight: 240 })).toBe('480p');
-    expect(chooseTranscodeQuality({ maxBitrate: 100_000 })).toBe('480p');
+    expect(chooseTranscodeQuality({ sourceWidth: 320, sourceHeight: 240 })).toBe('360p');
+    expect(chooseTranscodeQuality({ maxBitrate: 100_000 })).toBe('360p');
+  });
+
+  it('clamps the chosen rung down to maxQuality (per-user cap)', () => {
+    // Unconstrained would be 720p; a 480p cap drags it down to 480p.
+    expect(chooseTranscodeQuality({ maxQuality: '480p' })).toBe('480p');
+    // A 4K source for a 1080p client would be 1080p; a 720p cap lowers it.
+    expect(
+      chooseTranscodeQuality({
+        sourceWidth: 3840,
+        sourceHeight: 2160,
+        maxWidth: 1920,
+        maxHeight: 1080,
+        maxQuality: '720p',
+      }),
+    ).toBe('720p');
+  });
+
+  it('never raises the chosen rung when maxQuality is above the honest choice', () => {
+    // A 480p source stays 480p even though the cap would allow 1080p.
+    expect(
+      chooseTranscodeQuality({ sourceWidth: 854, sourceHeight: 480, maxQuality: '1080p' }),
+    ).toBe('480p');
   });
 });

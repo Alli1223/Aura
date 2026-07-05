@@ -54,6 +54,7 @@ interface ErrorBody {
 interface StartBody {
   sessionId: string;
   playlistUrl: string;
+  quality: string;
 }
 
 async function registerUser(): Promise<Session> {
@@ -277,6 +278,29 @@ describe('POST /api/stream/hls/:mediaFileId — session start', () => {
     const first = await startHlsOk(fixture.mediaFileId, token);
     const second = await startHlsOk(fixture.mediaFileId, token);
     expect(second.sessionId).toBe(first.sessionId);
+  }, 60_000);
+
+  it('echoes the granted quality for an uncapped user request', async () => {
+    const { fixture, token } = await grantedFixture('quality-echo.mp4');
+    const body = await startHlsOk(fixture.mediaFileId, token, '720p');
+    expect(body.quality).toBe('720p');
+  }, 60_000);
+
+  it('clamps a capped user up-front: a higher request starts the lower rung', async () => {
+    const { user, fixture, token } = await grantedFixture('capped.mp4');
+    // Cap the user at 360p; they ask for 1080p and must get 360p instead.
+    await prisma.user.update({ where: { id: user.id }, data: { maxQuality: '360p' } });
+
+    const body = await startHlsOk(fixture.mediaFileId, token, '1080p');
+    expect(body.quality).toBe('360p');
+
+    // The started session actually runs at the clamped rung: the 480x360 clip is
+    // transcoded within the 360p (640w) cap, so the playlist is serviceable.
+    const playlist = await app.inject({ method: 'GET', url: body.playlistUrl });
+    expect(playlist.statusCode).toBe(200);
+    expect(playlist.body).toContain('#EXTM3U');
+
+    await app.inject({ method: 'DELETE', url: body.playlistUrl.replace('/index.m3u8', '') });
   }, 60_000);
 });
 

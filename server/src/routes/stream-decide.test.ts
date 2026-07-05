@@ -296,6 +296,24 @@ describe('POST /api/stream/decide/:mediaFileId — transcode branch', () => {
     expect(verified.ok && verified.claims.mediaFileId).toBe(fixture.mediaFileId);
   });
 
+  it('never returns a quality above a capped user\'s effective maximum', async () => {
+    const user = await registerUser();
+    // Cap this user at 480p. The 4K source below would otherwise decide 1080p.
+    await prisma.user.update({ where: { id: user.id }, data: { maxQuality: '480p' } });
+    const fixture = await createFile({ width: 3840, height: 2160 });
+    await grantAccess(user.id, fixture.libraryId);
+
+    const response = await postDecide(fixture.mediaFileId, {}, user.accessToken);
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<TranscodeBody>();
+
+    expect(body.action).toBe('transcode');
+    expect(body.transcodeReason).toBe('resolution');
+    // Clamped from 1080p down to the user's 480p cap — enforced server-side.
+    expect(body.quality).toBe('480p');
+    expect(body.hlsStartUrl).toContain('&quality=480p');
+  });
+
   it('honours a rich client capability set (mkv/hevc/ac3 client -> direct)', async () => {
     const user = await registerUser();
     const fixture = await createFile({

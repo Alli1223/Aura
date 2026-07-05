@@ -10,6 +10,7 @@ import { userRoleSchema } from '../db/constants.js';
 import { writeAuditLog } from '../lib/audit.js';
 import { ApiError, notFoundError, sendError } from '../lib/errors.js';
 import { parseBody, parseParams } from '../lib/validation.js';
+import { qualityNameSchema } from '../streaming/quality-ladder.js';
 
 // User administration (admin only) and self-service profile routes.
 //
@@ -34,10 +35,16 @@ const adminUpdateUserSchema = z
     role: userRoleSchema.optional(),
     isEnabled: z.boolean('isEnabled must be a boolean').optional(),
     email: emailSchema.nullable().optional(),
+    // null clears any personal cap (the server-wide maxQuality then applies).
+    maxQuality: qualityNameSchema.nullable().optional(),
   })
   .refine(
-    (body) => body.role !== undefined || body.isEnabled !== undefined || body.email !== undefined,
-    { message: 'At least one of role, isEnabled or email must be provided' },
+    (body) =>
+      body.role !== undefined ||
+      body.isEnabled !== undefined ||
+      body.email !== undefined ||
+      body.maxQuality !== undefined,
+    { message: 'At least one of role, isEnabled, email or maxQuality must be provided' },
   );
 
 const adminSetPasswordSchema = z.object({ newPassword: passwordSchema });
@@ -232,6 +239,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
             ...(body.role !== undefined ? { role: body.role } : {}),
             ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
             ...(body.email !== undefined ? { email: body.email } : {}),
+            ...(body.maxQuality !== undefined ? { maxQuality: body.maxQuality } : {}),
           },
         });
         // Disabling a user kills all their refresh sessions immediately.
@@ -276,6 +284,17 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
           ...auditBase,
           action: 'user.email_changed',
           details: { from: target.email, to: body.email },
+        },
+        request.log,
+      );
+    }
+    if (body.maxQuality !== undefined && body.maxQuality !== target.maxQuality) {
+      await writeAuditLog(
+        prisma,
+        {
+          ...auditBase,
+          action: 'user.max_quality_changed',
+          details: { from: target.maxQuality, to: body.maxQuality },
         },
         request.log,
       );

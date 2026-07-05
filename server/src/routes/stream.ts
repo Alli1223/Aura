@@ -24,11 +24,15 @@ import {
   HLS_PLAYLIST_NAME,
   HlsInputError,
   HlsSessionManager,
-  isHlsQualityName,
   TooManySessionsError,
-  type HlsQualityName,
 } from '../streaming/hls-session.js';
 import { clientCapabilitiesSchema, decidePlayback } from '../streaming/playback-decision.js';
+import {
+  clampQuality,
+  effectiveMaxQuality,
+  isHlsQualityName,
+  type HlsQualityName,
+} from '../streaming/quality-ladder.js';
 import {
   type StreamTokenClaims,
   issueStreamToken,
@@ -135,6 +139,11 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
     await assertMediaItemAccess(request.user, file.mediaItemId);
 
+    // The user's effective quality cap: min(their personal cap, server cap).
+    // Enforced server-side so a capped user is never handed a rung above it.
+    const serverMaxQuality = await getSetting('maxQuality', request.log);
+    const maxQuality = effectiveMaxQuality(request.user.maxQuality, serverMaxQuality);
+
     const decision = decidePlayback({
       file: {
         container: file.container,
@@ -145,6 +154,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
       },
       streams: file.streams,
       client: capabilities,
+      maxQuality,
     });
 
     // One freshly minted stream token, scoped to this user + file, embedded in
@@ -348,9 +358,14 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
   /** Only playlist and segment basenames — no path separators, no traversal. */
   const HLS_FILE_PATTERN = /^[a-zA-Z0-9_.-]+\.(m3u8|ts)$/;
 
-  function parseQuality(query: unknown): HlsQualityName {
+  /**
+   * The requested quality rung, or undefined when the client did not ask for
+   * one (the server default then applies). An explicit but unknown value is a
+   * 400 — the client asked for something that does not exist.
+   */
+  function parseRequestedQuality(query: unknown): HlsQualityName | undefined {
     const raw = (query as Record<string, unknown> | null)?.quality;
-    if (raw === undefined) return '720p';
+    if (raw === undefined) return undefined;
     if (typeof raw !== 'string' || !isHlsQualityName(raw)) {
       throw new ApiError(400, 'VALIDATION', 'Unsupported quality');
     }
@@ -367,7 +382,16 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     const { claims, user, token } = await authenticateStreamToken(request);
     if (claims.mediaFileId !== mediaFileId) throw tokenInvalidError();
 
-    const quality = parseQuality(request.query);
+    const requestedQuality = parseRequestedQuality(request.query);
+    // Resolve the requested rung (or the server default) and clamp it to the
+    // user's effective cap — SERVER-SIDE, so a capped user who asks for a higher
+    // rung is downgraded to the highest they are allowed. Never trust the client.
+    const [defaultQuality, serverMaxQuality] = await Promise.all([
+      getSetting('defaultQuality', request.log),
+      getSetting('maxQuality', request.log),
+    ]);
+    const effectiveMax = effectiveMaxQuality(user.maxQuality, serverMaxQuality);
+    const quality = clampQuality(requestedQuality ?? defaultQuality, effectiveMax);
 
     const file = await prisma.mediaFile.findUnique({
       where: { id: mediaFileId },
@@ -410,7 +434,9 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     }
 
     const playlistUrl = `/api/stream/hls/${session.id}/${HLS_PLAYLIST_NAME}?token=${encodeURIComponent(token)}`;
-    return reply.send({ sessionId: session.id, playlistUrl });
+    // Echo the granted quality so the UI reflects the actually-started rung
+    // (which may be lower than requested when the user is capped).
+    return reply.send({ sessionId: session.id, playlistUrl, quality: session.quality });
   });
 
   /**

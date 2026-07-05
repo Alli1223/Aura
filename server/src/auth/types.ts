@@ -20,6 +20,8 @@ export interface AuthUser {
   role: string;
   isEnabled: boolean;
   mustChangePassword: boolean;
+  /** Per-user maximum transcode quality, or null for "no personal cap". */
+  maxQuality: string | null;
   createdAt: Date;
   lastLoginAt: Date | null;
 }
@@ -32,6 +34,7 @@ export function toAuthUser(user: User): AuthUser {
     role: user.role,
     isEnabled: user.isEnabled,
     mustChangePassword: user.mustChangePassword,
+    maxQuality: user.maxQuality,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
   };

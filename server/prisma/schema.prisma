@@ -37,6 +37,9 @@ model User {
   role               String    @default("user")
   isEnabled          Boolean   @default(true)
   mustChangePassword Boolean   @default(false)
+  /// Per-user maximum transcode quality (a quality-ladder rung name), or null
+  /// for "no personal cap" (the server-wide maxQuality setting then applies).
+  maxQuality         String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   lastLoginAt        DateTime?
