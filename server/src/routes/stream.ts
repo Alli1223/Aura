@@ -28,7 +28,12 @@ import {
   TooManySessionsError,
   type HlsQualityName,
 } from '../streaming/hls-session.js';
-import { type StreamTokenClaims, issueStreamToken, verifyStreamToken } from '../streaming/stream-tokens.js';
+import { clientCapabilitiesSchema, decidePlayback } from '../streaming/playback-decision.js';
+import {
+  type StreamTokenClaims,
+  issueStreamToken,
+  verifyStreamToken,
+} from '../streaming/stream-tokens.js';
 
 export interface StreamRoutesOptions {
   config: Config;
@@ -91,6 +96,87 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
       ttlMs: opts.config.STREAM_TOKEN_TTL_MS,
     });
     return reply.send({ token, expiresAt: expiresAt.toISOString() });
+  });
+
+  /**
+   * Playback decision: given a client's declared capabilities (request body,
+   * all fields optional — omissions fall back to a conservative web-browser
+   * profile), decides direct play vs transcode for a media file and returns
+   * BOTH the decision AND ready-to-use, token-carrying URLs so the player needs
+   * only this one call before starting playback.
+   *
+   * This is a pre-playback API call, so it is access-token authed (JWT) rather
+   * than stream-token authed; it MINTS a stream token here (same issuance the
+   * /token route uses) and embeds it in the returned direct/HLS URLs. The
+   * missing-id 404 is byte-identical to the ungranted-library 404 (enumeration
+   * cloak), exactly like the /token route.
+   */
+  app.post('/decide/:mediaFileId', { preHandler: app.authenticate }, async (request, reply) => {
+    const { mediaFileId } = request.params as { mediaFileId: string };
+
+    const capabilities = parseBody(clientCapabilitiesSchema, request.body ?? {}, reply);
+    if (capabilities === undefined) return reply;
+
+    const file = await prisma.mediaFile.findUnique({
+      where: { id: mediaFileId },
+      select: {
+        id: true,
+        mediaItemId: true,
+        container: true,
+        videoCodec: true,
+        width: true,
+        height: true,
+        bitrate: true,
+        streams: { select: { type: true, codec: true } },
+      },
+    });
+    // Same enumeration cloak as /token: a missing id and an ungranted library
+    // are byte-identical 404s.
+    if (file === null) throw notFoundError(ITEM_NOT_FOUND_MESSAGE);
+    await assertMediaItemAccess(request.user, file.mediaItemId);
+
+    const decision = decidePlayback({
+      file: {
+        container: file.container,
+        videoCodec: file.videoCodec,
+        width: file.width,
+        height: file.height,
+        bitrate: file.bitrate,
+      },
+      streams: file.streams,
+      client: capabilities,
+    });
+
+    // One freshly minted stream token, scoped to this user + file, embedded in
+    // whichever URL the player will actually hit next.
+    const { token: streamToken, expiresAt } = issueStreamToken({
+      userId: request.user.id,
+      mediaFileId: file.id,
+      secret: opts.streamTokenSecret,
+      ttlMs: opts.config.STREAM_TOKEN_TTL_MS,
+    });
+    const encodedToken = encodeURIComponent(streamToken);
+
+    if (decision.action === 'direct') {
+      return reply.send({
+        action: 'direct',
+        reasons: decision.reasons,
+        streamToken,
+        expiresAt: expiresAt.toISOString(),
+        url: `/api/stream/direct/${file.id}?token=${encodedToken}`,
+      });
+    }
+
+    return reply.send({
+      action: 'transcode',
+      reasons: decision.reasons,
+      transcodeReason: decision.transcodeReason,
+      transcodeReasons: decision.transcodeReasons,
+      quality: decision.quality,
+      streamToken,
+      expiresAt: expiresAt.toISOString(),
+      hlsStartUrl: `/api/stream/hls/${file.id}?token=${encodedToken}&quality=${decision.quality}`,
+    });
   });
 
   /**
@@ -372,7 +458,10 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     void reply.header('content-type', isPlaylist ? 'application/vnd.apple.mpegurl' : 'video/mp2t');
     // The playlist grows while transcoding, so it must never be cached; a
     // segment's bytes never change for the session's lifetime.
-    void reply.header('cache-control', isPlaylist ? 'no-store' : 'public, max-age=31536000, immutable');
+    void reply.header(
+      'cache-control',
+      isPlaylist ? 'no-store' : 'public, max-age=31536000, immutable',
+    );
     void reply.header('content-length', stats.size);
 
     if (request.method === 'HEAD') return reply.send();
