@@ -26,8 +26,15 @@ import {
   HlsInputError,
   HlsSessionManager,
   TooManySessionsError,
+  type BurnSubtitle,
 } from '../streaming/hls-session.js';
 import { clientCapabilitiesSchema, decidePlayback } from '../streaming/playback-decision.js';
+import {
+  resolveBurnSubtitle,
+  SubtitleNotFoundError,
+  type BurnSubtitleSource,
+  type EmbeddedSubtitleStream,
+} from '../streaming/subtitles.js';
 import {
   clampQuality,
   effectiveMaxQuality,
@@ -474,6 +481,47 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
   }
 
   /**
+   * Optional burn-in subtitle selection for an HLS start, accepted on the query
+   * string or the JSON body (query wins). `burnSubtitle` is a subtitle trackId
+   * from listSubtitles (`embedded-<n>` / `external-<hash>`). Its VALUE is only
+   * shape-checked here (non-empty string); it is validated against the file's
+   * real tracks later via resolveBurnSubtitle. Omitted means "burn nothing".
+   */
+  const burnSubtitleSchema = z.object({
+    burnSubtitle: z.string().trim().min(1).optional(),
+  });
+
+  /** Parses the burn-in trackId from query/body; a malformed value is a 400. */
+  function parseBurnSubtitle(request: FastifyRequest): string | undefined {
+    const query = typeof request.query === 'object' && request.query !== null ? request.query : {};
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    const parsed = burnSubtitleSchema.safeParse({ ...body, ...query });
+    if (!parsed.success) {
+      throw new ApiError(400, 'VALIDATION', 'Invalid subtitle selection');
+    }
+    return parsed.data.burnSubtitle;
+  }
+
+  /**
+   * Maps a resolved subtitle track to the ffmpeg burn spec: an embedded IMAGE
+   * sub (PGS/DVD/DVB) is composited with the `overlay` filter by stream index;
+   * an embedded TEXT sub is rendered with the `subtitles` filter (`si=<n>`); an
+   * external sidecar (always text) is rendered from its validated path. The
+   * external sidecar path is re-validated inside a media root by the session
+   * manager before ffmpeg is spawned.
+   */
+  function toBurnSpec(trackId: string, resolved: BurnSubtitleSource): BurnSubtitle {
+    if (resolved.source === 'external') {
+      if (resolved.sidecarPath === undefined) throw new SubtitleNotFoundError(trackId);
+      return { type: 'external-text', filePath: resolved.sidecarPath };
+    }
+    const subtitleIndex = resolved.subtitleIndex ?? 0;
+    return resolved.kind === 'image'
+      ? { type: 'overlay', subtitleIndex }
+      : { type: 'embedded-text', subtitleIndex };
+  }
+
+  /**
    * Starts (or reuses) an HLS transcode session for a media file and returns
    * the playlist URL. Auth chain runs before any transcode work: token verify,
    * token-scoped-to-this-file, fresh user, file exists, library access.
@@ -486,6 +534,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     const requestedQuality = parseRequestedQuality(request.query);
     const { audioTrack: requestedAudioTrack, downmixStereo } = parseAudioSelection(request);
     const requestedStartOffset = parseStartOffset(request);
+    const requestedBurnSubtitle = parseBurnSubtitle(request);
     // Resolve the requested rung (or the server default) and clamp it to the
     // user's effective cap — SERVER-SIDE, so a capped user who asks for a higher
     // rung is downgraded to the highest they are allowed. Never trust the client.
@@ -504,14 +553,17 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
         path: true,
         durationMs: true,
         streams: {
-          where: { type: 'audio' },
+          // Audio for track selection AND subtitle for burn-in resolution.
+          where: { type: { in: ['audio', 'subtitle'] } },
           select: {
             streamIndex: true,
+            type: true,
             codec: true,
             language: true,
             title: true,
             channels: true,
             isDefault: true,
+            isForced: true,
           },
         },
       },
@@ -524,17 +576,54 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     // the default (or first) track. The chosen track's channel count feeds the
     // surround-preservation decision when the client is not stereo-only.
     const audioTracks = listAudioTracks(
-      file.streams.map((stream) => ({
-        streamIndex: stream.streamIndex,
-        codec: stream.codec,
-        language: stream.language,
-        title: stream.title,
-        channels: stream.channels,
-        default: stream.isDefault,
-      })),
+      file.streams
+        .filter((stream) => stream.type === 'audio')
+        .map((stream) => ({
+          streamIndex: stream.streamIndex,
+          codec: stream.codec,
+          language: stream.language,
+          title: stream.title,
+          channels: stream.channels,
+          default: stream.isDefault,
+        })),
     );
     const audioTrackIndex = resolveAudioTrackIndex(audioTracks, requestedAudioTrack);
     const selectedAudioChannels = audioTracks[audioTrackIndex]?.channels;
+
+    // Resolve an optional burn-in subtitle selection against the file's REAL
+    // subtitle tracks (embedded streams + external sidecars). An unknown/
+    // malformed trackId is a 400 — the client asked to burn something that does
+    // not exist. Only IMAGE subs strictly NEED burning, but any track is allowed.
+    let burnSubtitle: { trackId: string; spec: BurnSubtitle } | undefined;
+    if (requestedBurnSubtitle !== undefined) {
+      const subtitleStreams: EmbeddedSubtitleStream[] = file.streams
+        .filter((stream) => stream.type === 'subtitle')
+        .map((stream) => ({
+          streamIndex: stream.streamIndex,
+          codec: stream.codec,
+          language: stream.language,
+          title: stream.title,
+          forced: stream.isForced,
+          default: stream.isDefault,
+        }));
+      let resolved: BurnSubtitleSource;
+      try {
+        resolved = await resolveBurnSubtitle(
+          { id: file.id, path: file.path, subtitleStreams },
+          requestedBurnSubtitle,
+          { mediaRoots: opts.config.MEDIA_ROOTS },
+        );
+      } catch (err) {
+        if (err instanceof SubtitleNotFoundError) {
+          throw new ApiError(400, 'VALIDATION', 'Unknown subtitle track');
+        }
+        throw err;
+      }
+      burnSubtitle = {
+        trackId: requestedBurnSubtitle,
+        spec: toBurnSpec(requestedBurnSubtitle, resolved),
+      };
+    }
 
     // Duration (from ffprobe, ms) lets the session manager clamp a seek offset
     // into the servable window. Unknown/null duration => passed through unclamped.
@@ -551,6 +640,7 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
         downmixStereo,
         audioChannels: selectedAudioChannels,
         startOffsetSec: requestedStartOffset,
+        burnSubtitle,
       });
     } catch (err) {
       if (err instanceof HlsInputError) {
@@ -593,6 +683,9 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
       audioTrackIndex: session.audioTrackIndex,
       downmixStereo: session.downmixStereo,
       startOffsetSec: session.startOffsetSec,
+      // The burned-in subtitle trackId (echoed so the UI reflects the active
+      // selection), or null when nothing is burned.
+      burnSubtitleTrackId: session.burnSubtitleTrackId ?? null,
     });
   });
 

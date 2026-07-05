@@ -85,6 +85,87 @@ export const HLS_SEGMENT_PATTERN = 'segment%05d.ts';
 export const MAX_TRANSCODE_AUDIO_CHANNELS = 6;
 
 // ---------------------------------------------------------------------------
+// Subtitle burn-in (subtitle-burn-in roadmap item)
+// ---------------------------------------------------------------------------
+
+/**
+ * A subtitle track to BURN into the transcoded video. Burning re-renders every
+ * output frame with the subtitle composited on top; because the HLS transcode
+ * ALWAYS re-encodes the video, the burn is folded into the same ffmpeg via
+ * `-filter_complex` (which replaces the plain `-vf` scale). Three shapes:
+ *
+ *  - `overlay`       — an IMAGE subtitle (PGS/HDMV, VOBSUB/DVD, DVB). The decoded
+ *                      bitmap subtitle STREAM is composited onto the video with
+ *                      the `overlay` filter (`[0:v:0][0:s:<n>]overlay`). This is
+ *                      the ONLY way to display a bitmap sub — it cannot become
+ *                      WebVTT — and is the primary purpose of this feature. The
+ *                      stream index is a validated integer, so nothing untrusted
+ *                      ever reaches the filtergraph.
+ *  - `embedded-text` — a TEXT subtitle muxed into the SAME input file, rendered
+ *                      with libass via the `subtitles` filter reading the input
+ *                      at `si=<n>` (a validated integer). A convenience/bonus
+ *                      path: text subs are normally served as WebVTT instead.
+ *  - `external-text` — a TEXT sidecar file, rendered with the `subtitles` filter
+ *                      reading that path. The path is validated to live inside a
+ *                      media root by startSession before ffmpeg is spawned, and
+ *                      is escaped for the filtergraph (escapeSubtitlesFilterPath)
+ *                      so a crafted filename cannot inject filter syntax.
+ */
+export type BurnSubtitle =
+  | { type: 'overlay'; subtitleIndex: number }
+  | { type: 'embedded-text'; subtitleIndex: number }
+  | { type: 'external-text'; filePath: string };
+
+/** Coerces a subtitle-relative index to a safe non-negative integer (fallback 0). */
+function sanitizeSubtitleIndex(value: number | undefined): number {
+  return value !== undefined && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Escapes a filesystem path so it can appear as the `filename=` value of the
+ * `subtitles` filter inside an ffmpeg filtergraph. ffmpeg applies TWO levels of
+ * unescaping — first the whole graph (splitting on `,` `;` `[` `]`), then each
+ * filter's option string (splitting on `:`) — so a literal path must be escaped
+ * for BOTH: the filter-argument level first, then the graph level. Empirically
+ * verified against paths containing spaces, `:`, `,`, `;`, `'`, `\`, `[` and `]`.
+ * (ffmpeg is spawned with an argument array, never a shell, so this escaping is
+ * purely for ffmpeg's own filtergraph parser; the path is also required to be
+ * absolute — startSession passes a realpath — so an embedded `:` is never
+ * mistaken for a protocol scheme.)
+ */
+export function escapeSubtitlesFilterPath(filePath: string): string {
+  // Filter-argument level: protect `\`, `'` and the option separator `:`.
+  const argLevel = filePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
+  // Graph level: protect `\`, `'` and the graph separators `[` `]` `,` `;`.
+  return argLevel
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/([[\],;])/g, '\\$1');
+}
+
+/**
+ * Builds the `-filter_complex` graph that composites a burn-in subtitle onto the
+ * video and then downscales the RESULT to the quality cap. The subtitle is
+ * composited BEFORE the scale so a bitmap sub (authored at the source
+ * resolution) stays aligned, then the whole frame scales together; the graph's
+ * single output pad `[v]` is what the caller maps. `scaleExpr` is the same
+ * `scale='min(iw,W)':-2` used by the non-burn `-vf` path, so scaling behaviour
+ * (never upscale, even aspect-preserving height) is identical.
+ */
+function buildBurnFilterComplex(burn: BurnSubtitle, inputPath: string, scaleExpr: string): string {
+  if (burn.type === 'overlay') {
+    const index = sanitizeSubtitleIndex(burn.subtitleIndex);
+    // Comma-chains overlay -> scale in a single chain (no `;`), so the graph
+    // carries no shell-control character.
+    return `[0:v:0][0:s:${index}]overlay,${scaleExpr}[v]`;
+  }
+  const file = burn.type === 'embedded-text' ? inputPath : burn.filePath;
+  const si =
+    burn.type === 'embedded-text' ? `:si=${sanitizeSubtitleIndex(burn.subtitleIndex)}` : '';
+  return `[0:v:0]subtitles=filename=${escapeSubtitlesFilterPath(file)}${si},${scaleExpr}[v]`;
+}
+
+// ---------------------------------------------------------------------------
 // ffmpeg argument builder (pure — no spawning, exhaustively unit-tested)
 // ---------------------------------------------------------------------------
 
@@ -132,6 +213,14 @@ export interface BuildHlsArgsParams {
    * should pass an already-clamped value (see clampStartOffset).
    */
   startOffsetSec?: number;
+  /**
+   * A subtitle track to burn into the video (subtitle-burn-in). When present the
+   * scale is moved into a `-filter_complex` that first composites the subtitle
+   * and then downscales, and the filter's `[v]` output is mapped in place of the
+   * raw video stream (no `-sn`, no `-vf`). Omitted transcodes with no subtitle
+   * burned (the default, byte-for-byte unchanged output).
+   */
+  burnSubtitle?: BurnSubtitle;
 }
 
 /**
@@ -188,6 +277,19 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   const playlistPath = path.join(outputDir, HLS_PLAYLIST_NAME);
   const segmentPath = path.join(outputDir, HLS_SEGMENT_PATTERN);
 
+  const scaleExpr = `scale='min(iw,${quality.maxWidth})':-2`;
+  const burn = params.burnSubtitle;
+  // Video mapping + filter differ only for a burn-in: the subtitle is
+  // composited then scaled inside a -filter_complex whose [v] output is mapped
+  // in place of the raw video stream. Without a burn-in this is the original
+  // `-map 0:v:0` / `-sn` / `-vf scale` path, byte-for-byte unchanged.
+  const videoMap = burn === undefined ? ['-map', '0:v:0'] : ['-map', '[v]'];
+  const subtitleDrop = burn === undefined ? ['-sn'] : [];
+  const videoFilter =
+    burn === undefined
+      ? ['-vf', scaleExpr]
+      : ['-filter_complex', buildBurnFilterComplex(burn, inputPath, scaleExpr)];
+
   // prettier-ignore
   return [
     '-nostdin',
@@ -196,16 +298,17 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
     // -i so it applies to the next input.
     ...seekArgs,
     '-i', inputPath,
-    // First video stream, plus the selected audio (the trailing "?" makes the
-    // audio mapping optional so a video with no audio still transcodes).
-    '-map', '0:v:0',
+    // First video stream (or the burned [v] filter output), plus the selected
+    // audio (the trailing "?" makes the audio mapping optional so a video with
+    // no audio still transcodes).
+    ...videoMap,
     '-map', `0:a:${audioIndex}?`,
-    '-sn',
+    ...subtitleDrop,
     '-c:v', videoEncoder,
     '-preset', preset,
     '-profile:v', 'high',
     '-pix_fmt', 'yuv420p',
-    '-vf', `scale='min(iw,${quality.maxWidth})':-2`,
+    ...videoFilter,
     '-b:v', quality.videoBitrate,
     '-maxrate', quality.maxrate,
     '-bufsize', quality.bufsize,
@@ -277,7 +380,8 @@ export class HlsStartError extends Error {
   constructor(message: string, details: { stderr?: string; exitCode?: number | null } = {}) {
     super(message);
     this.name = 'HlsStartError';
-    this.stderr = details.stderr === undefined || details.stderr.length === 0 ? undefined : details.stderr;
+    this.stderr =
+      details.stderr === undefined || details.stderr.length === 0 ? undefined : details.stderr;
     this.exitCode = details.exitCode;
   }
 }
@@ -314,6 +418,12 @@ export interface HlsSession {
    * player-time to session-time.
    */
   readonly startOffsetSec: number;
+  /**
+   * The subtitle trackId burned into this session's video, or undefined when no
+   * subtitle is burned. Echoed to the client so the UI reflects the active
+   * burn-in selection.
+   */
+  readonly burnSubtitleTrackId: string | undefined;
   /** Absolute, containment-checked input path passed to ffmpeg. */
   readonly inputPath: string;
   /** Absolute scratch dir holding the playlist and segments. */
@@ -331,6 +441,7 @@ interface InternalSession {
   audioTrackIndex: number;
   downmixStereo: boolean;
   startOffsetSec: number;
+  burnSubtitleTrackId: string | undefined;
   inputPath: string;
   outputDir: string;
   createdAt: number;
@@ -381,6 +492,15 @@ export interface StartSessionParams {
    * from the start.
    */
   startOffsetSec?: number;
+  /**
+   * A subtitle track to burn into the video (subtitle-burn-in). `trackId` is the
+   * public subtitle track id (from listSubtitles), used for dedup and echoed
+   * back; `spec` describes how to composite it. For an `external-text` spec the
+   * `filePath` is re-validated to live inside a media root before ffmpeg spawns
+   * (HlsInputError otherwise). A different burned track — or none — is a DISTINCT
+   * session from an otherwise-identical request (see the dedup key).
+   */
+  burnSubtitle?: { trackId: string; spec: BurnSubtitle };
 }
 
 export interface HlsSessionManagerOptions {
@@ -475,9 +595,12 @@ export class HlsSessionManager {
     this.now = options.now ?? Date.now;
 
     const reaperEvery = options.reaperIntervalMs ?? Math.min(this.idleMs, 15_000);
-    this.reaperInterval = setInterval(() => {
-      void this.reapIdleSessions();
-    }, Math.max(reaperEvery, 100));
+    this.reaperInterval = setInterval(
+      () => {
+        void this.reapIdleSessions();
+      },
+      Math.max(reaperEvery, 100),
+    );
     // Never keep the event loop (or a test runner) alive just for the reaper.
     this.reaperInterval.unref();
   }
@@ -532,6 +655,7 @@ export class HlsSessionManager {
     downmixStereo,
     audioChannels,
     startOffsetSec,
+    burnSubtitle,
   }: StartSessionParams): Promise<HlsSession> {
     if (this.stopped) throw new HlsStartError('session manager is shut down');
 
@@ -548,10 +672,12 @@ export class HlsSessionManager {
     const grantedOffsetSec = clampStartOffset(startOffsetSec, mediaFile.durationSec);
     const offsetBucket = Math.floor(grantedOffsetSec);
 
-    // audioTrackIndex, downmix AND the seek offset each change the produced
-    // stream, so all are part of the dedup identity: switching any must start a
-    // DISTINCT session rather than reuse one built differently. NUL-delimited so
-    // no field value can ever bleed into an adjacent one.
+    // audioTrackIndex, downmix, the seek offset AND the burned subtitle each
+    // change the produced stream, so all are part of the dedup identity:
+    // switching any must start a DISTINCT session rather than reuse one built
+    // differently. The burn field is `b<trackId>` (or a bare `b` for no burn),
+    // so a burn-in session never reuses a no-subs one, nor a different track's.
+    // NUL-delimited so no field value can ever bleed into an adjacent one.
     const dedupKey = [
       userId,
       mediaFile.id,
@@ -559,6 +685,7 @@ export class HlsSessionManager {
       `a${resolvedAudioIndex}`,
       `d${resolvedDownmix ? 1 : 0}`,
       `o${offsetBucket}`,
+      `b${burnSubtitle?.trackId ?? ''}`,
     ].join('\0');
     const existingId = this.byKey.get(dedupKey);
     if (existingId !== undefined) {
@@ -585,6 +712,25 @@ export class HlsSessionManager {
     if (!resolution.ok) throw new HlsInputError(resolution.reason);
     const inputPath = resolution.canonicalPath;
 
+    // Resolve the burn-in spec (if any) BEFORE creating the scratch dir so a bad
+    // subtitle path leaves nothing behind. Embedded specs reference the already-
+    // validated input by stream index; an external sidecar path is re-validated
+    // to live inside a media root (defence in depth) and the canonical path is
+    // what ffmpeg reads.
+    let burnSpec: BurnSubtitle | undefined;
+    if (burnSubtitle !== undefined) {
+      if (burnSubtitle.spec.type === 'external-text') {
+        const subResolution = await resolveMediaFileForServing(
+          burnSubtitle.spec.filePath,
+          this.mediaRoots,
+        );
+        if (!subResolution.ok) throw new HlsInputError(subResolution.reason);
+        burnSpec = { type: 'external-text', filePath: subResolution.canonicalPath };
+      } else {
+        burnSpec = burnSubtitle.spec;
+      }
+    }
+
     // sessionId is a server-generated UUID — never user input — so the scratch
     // path can never traverse out of the transcode dir.
     const id = randomUUID();
@@ -601,6 +747,7 @@ export class HlsSessionManager {
       downmixStereo: resolvedDownmix,
       sourceChannels: audioChannels,
       startOffsetSec: grantedOffsetSec,
+      burnSubtitle: burnSpec,
     });
     const child = spawn(this.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     trackChild(child);
@@ -614,6 +761,7 @@ export class HlsSessionManager {
       audioTrackIndex: resolvedAudioIndex,
       downmixStereo: resolvedDownmix,
       startOffsetSec: grantedOffsetSec,
+      burnSubtitleTrackId: burnSubtitle?.trackId,
       inputPath,
       outputDir,
       createdAt: nowMs,

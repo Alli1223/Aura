@@ -18,6 +18,7 @@ import {
   languageLabel,
   listSubtitles,
   parseSidecarName,
+  resolveBurnSubtitle,
   SubtitleConversionError,
   SubtitleNotFoundError,
   type EmbeddedSubtitleStream,
@@ -257,6 +258,58 @@ describe('listSubtitles', () => {
     const tracks = await listSubtitles(movieMediaFile(), { mediaRoots: [outsideDir] });
     // Embedded still listed from the (DB) input; external discovery is skipped.
     expect(tracks.every((t) => t.source === 'embedded')).toBe(true);
+  });
+});
+
+describe('resolveBurnSubtitle', () => {
+  it('resolves an embedded TEXT track to its subtitle-relative stream index', async () => {
+    const file = movieMediaFile();
+    const [track] = await listSubtitles(file, { mediaRoots: [mediaRoot] });
+    const resolved = await resolveBurnSubtitle(file, track!.id, { mediaRoots: [mediaRoot] });
+    expect(resolved).toMatchObject({ source: 'embedded', kind: 'text', subtitleIndex: 0 });
+    expect(resolved.sidecarPath).toBeUndefined();
+  });
+
+  it('resolves an embedded IMAGE (PGS) track as image with its index', async () => {
+    const file = movieMediaFile({
+      subtitleStreams: [
+        {
+          streamIndex: 3,
+          codec: 'hdmv_pgs_subtitle',
+          language: 'eng',
+          title: null,
+          forced: false,
+          default: false,
+        },
+      ],
+    });
+    const resolved = await resolveBurnSubtitle(file, 'embedded-3', { mediaRoots: [mediaRoot] });
+    expect(resolved).toMatchObject({ source: 'embedded', kind: 'image', subtitleIndex: 0 });
+  });
+
+  it('resolves an external sidecar to a media-root-validated absolute path', async () => {
+    const file = movieMediaFile();
+    const tracks = await listSubtitles(file, { mediaRoots: [mediaRoot] });
+    const external = tracks.find((t) => t.source === 'external' && t.format === 'srt');
+    const resolved = await resolveBurnSubtitle(file, external!.id, { mediaRoots: [mediaRoot] });
+    expect(resolved.source).toBe('external');
+    expect(resolved.kind).toBe('text');
+    expect(resolved.sidecarPath).toBeDefined();
+    expect(path.isAbsolute(resolved.sidecarPath!)).toBe(true);
+    expect(resolved.sidecarPath!.startsWith(mediaRoot)).toBe(true);
+  });
+
+  it('throws SubtitleNotFoundError for a malformed or unknown trackId', async () => {
+    const file = movieMediaFile();
+    for (const bad of ['', 'nope', '../etc', 'embedded-x', 'external-zzzz']) {
+      await expect(
+        resolveBurnSubtitle(file, bad, { mediaRoots: [mediaRoot] }),
+      ).rejects.toBeInstanceOf(SubtitleNotFoundError);
+    }
+    // Well-formed but not a real stream of this file.
+    await expect(
+      resolveBurnSubtitle(file, 'embedded-99', { mediaRoots: [mediaRoot] }),
+    ).rejects.toBeInstanceOf(SubtitleNotFoundError);
   });
 });
 

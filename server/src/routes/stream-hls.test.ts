@@ -1,6 +1,6 @@
 import { execFile, execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,7 @@ let transcodeDir: string;
 let baseClip: string;
 let longClip: string;
 let multiAudioClip: string;
+let subtitleClip: string;
 let prisma: PrismaClient;
 let app: FastifyInstance;
 let streamTokenSecret: string;
@@ -62,6 +63,18 @@ interface StartBody {
   audioTrackIndex: number;
   downmixStereo: boolean;
   startOffsetSec: number;
+  burnSubtitleTrackId: string | null;
+}
+
+interface SubtitleTrackBody {
+  id: string;
+  source: string;
+  kind: string;
+  format: string;
+}
+interface SubtitleListBody {
+  mediaFileId: string;
+  tracks: SubtitleTrackBody[];
 }
 
 interface AudioTrackBody {
@@ -217,6 +230,70 @@ async function grantedLongFixture(
   return { user, fixture, token };
 }
 
+/**
+ * Copies the mkv carrying an embedded eng srt subtitle, seeds rows AND persists
+ * its real ffprobe info (so the subtitle stream row exists and listSubtitles /
+ * resolveBurnSubtitle surface an `embedded-<n>` text track to burn).
+ */
+async function createSubtitleFixture(fileName: string): Promise<Fixture> {
+  const filePath = path.join(moviesDir, `${randomUUID().slice(0, 8)}-${fileName}`);
+  await copyFile(subtitleClip, filePath);
+
+  const library = await prisma.library.create({
+    data: { name: `Library ${randomUUID().slice(0, 8)}`, type: 'movies' },
+  });
+  const item = await prisma.mediaItem.create({
+    data: { libraryId: library.id, type: 'movie', title: 'Subbed', sortTitle: 'subbed' },
+  });
+  const file = await prisma.mediaFile.create({
+    data: {
+      mediaItemId: item.id,
+      path: filePath,
+      size: BigInt(1024),
+      mtimeMs: BigInt(Date.now()),
+    },
+  });
+  await persistProbe(file.id, await probeFile(filePath));
+  return { libraryId: library.id, mediaItemId: item.id, mediaFileId: file.id, filePath };
+}
+
+async function grantedSubtitleFixture(
+  fileName: string,
+): Promise<{ user: Session; fixture: Fixture; token: string }> {
+  const user = await registerUser();
+  const fixture = await createSubtitleFixture(fileName);
+  await grantAccess(user.id, fixture.libraryId);
+  const token = await tokenViaApi(user, fixture.mediaFileId);
+  return { user, fixture, token };
+}
+
+/** Fetches the embedded subtitle track id for a subtitle fixture via the list route. */
+async function embeddedSubtitleTrackId(mediaFileId: string, token: string): Promise<string> {
+  const response = await app.inject({
+    method: 'GET',
+    url: `/api/stream/subtitles/${mediaFileId}?token=${encodeURIComponent(token)}`,
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  const track = response
+    .json<SubtitleListBody>()
+    .tracks.find((t) => t.source === 'embedded' && t.kind === 'text');
+  expect(track, 'expected an embedded text subtitle track').toBeDefined();
+  return track!.id;
+}
+
+/** POST /hls/:mediaFileId with an optional burn-in subtitle trackId. */
+function startHlsBurn(
+  mediaFileId: string,
+  token: string,
+  opts: { quality?: string; burnSubtitle?: string },
+): Promise<LightMyRequestResponse> {
+  const params = new URLSearchParams();
+  params.set('token', token);
+  params.set('quality', opts.quality ?? '480p');
+  if (opts.burnSubtitle !== undefined) params.set('burnSubtitle', opts.burnSubtitle);
+  return app.inject({ method: 'POST', url: `/api/stream/hls/${mediaFileId}?${params.toString()}` });
+}
+
 function startHls(
   mediaFileId: string,
   token: string | undefined,
@@ -242,7 +319,11 @@ function startHlsSeek(
 }
 
 /** POST /hls/:mediaFileId and assert it started; returns the parsed body. */
-async function startHlsOk(mediaFileId: string, token: string, quality = '480p'): Promise<StartBody> {
+async function startHlsOk(
+  mediaFileId: string,
+  token: string,
+  quality = '480p',
+): Promise<StartBody> {
   const response = await startHls(mediaFileId, token, quality);
   expect(response.statusCode, response.body).toBe(200);
   return response.json<StartBody>();
@@ -314,6 +395,24 @@ beforeAll(async () => {
     '-disposition:a:0', 'default', '-disposition:a:1', '0',
     '-shortest',
     multiAudioClip,
+  ]);
+
+  // 5s clip with an embedded eng srt subtitle track — burned into the video via
+  // the real libass `subtitles` filter by the subtitle-burn-in tests.
+  const burnSrt = path.join(tempDir, 'burn.srt');
+  await writeFile(burnSrt, '1\n00:00:00,000 --> 00:00:05,000\nBurned caption\n', 'utf8');
+  subtitleClip = path.join(tempDir, 'subtitle-clip.mkv');
+  // prettier-ignore
+  await execFileAsync(FFMPEG, [
+    '-y', '-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc=duration=5:size=480x360:rate=15',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5',
+    '-i', burnSrt,
+    '-map', '0:v:0', '-map', '1:a:0', '-map', '2:s:0',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ac', '2', '-c:s', 'srt',
+    '-metadata:s:s:0', 'language=eng', '-metadata:s:s:0', 'title=English',
+    subtitleClip,
   ]);
 
   const databaseUrl = `file:${path.join(tempDir, 'test.db')}`;
@@ -526,20 +625,24 @@ describe('POST /api/stream/hls/:mediaFileId — transcode-seek (startOffset)', (
   it('reuses within the same offset, then starts a DISTINCT session per offset', async () => {
     const { fixture, token } = await grantedLongFixture('seek-dedup.mp4');
     // Same offset repeated (no intervening different offset) reuses one session.
-    const first = (await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2 })).json<StartBody>();
+    const first = (
+      await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2 })
+    ).json<StartBody>();
     const firstAgain = (
       await startHlsSeek(fixture.mediaFileId, token, { startOffset: 2 })
     ).json<StartBody>();
     expect(firstAgain.sessionId).toBe(first.sessionId);
 
     // A different offset is a distinct session (and supersedes the offset-2 one).
-    const other = (await startHlsSeek(fixture.mediaFileId, token, { startOffset: 6 })).json<StartBody>();
+    const other = (
+      await startHlsSeek(fixture.mediaFileId, token, { startOffset: 6 })
+    ).json<StartBody>();
     expect(other.sessionId).not.toBe(first.sessionId);
 
     await stop(other.sessionId, token);
   }, 90_000);
 
-  it('supersedes the seeking user\'s prior session but not another user\'s', async () => {
+  it("supersedes the seeking user's prior session but not another user's", async () => {
     // Alice and Bob both watch the SAME file (both granted to its library).
     const { fixture, token: aliceToken } = await grantedLongFixture('seek-super.mp4');
     const bob = await registerUser();
@@ -821,8 +924,12 @@ describe('POST /api/stream/hls/:mediaFileId — audio selection', () => {
 
   it('starts DISTINCT sessions per audio track and reuses within the same track', async () => {
     const { fixture, token } = await grantedMultiAudioFixture('sel-dedup.mkv');
-    const first = (await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 0 })).json<StartBody>();
-    const second = (await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 })).json<StartBody>();
+    const first = (
+      await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 0 })
+    ).json<StartBody>();
+    const second = (
+      await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 })
+    ).json<StartBody>();
     const secondAgain = (
       await startHlsSelect(fixture.mediaFileId, token, { audioTrack: 1 })
     ).json<StartBody>();
@@ -874,6 +981,79 @@ describe('POST /api/stream/hls/:mediaFileId — audio selection', () => {
 
     await stop(body.sessionId, token);
   }, 60_000);
+});
+
+describe('POST /api/stream/hls/:mediaFileId — subtitle burn-in', () => {
+  /** Stops a started session so no ffmpeg/scratch dir lingers between tests. */
+  async function stop(sessionId: string, token: string): Promise<void> {
+    await app.inject({
+      method: 'DELETE',
+      url: `/api/stream/hls/${sessionId}?token=${encodeURIComponent(token)}`,
+    });
+  }
+
+  it('accepts a burnSubtitle trackId, echoes it, and serves a valid playlist + segment', async () => {
+    const { fixture, token } = await grantedSubtitleFixture('burn-ok.mkv');
+    const trackId = await embeddedSubtitleTrackId(fixture.mediaFileId, token);
+
+    const response = await startHlsBurn(fixture.mediaFileId, token, { burnSubtitle: trackId });
+    expect(response.statusCode, response.body).toBe(200);
+    const body = response.json<StartBody>();
+    expect(body.burnSubtitleTrackId).toBe(trackId);
+
+    // The burned transcode produces a serviceable playlist with >=1 segment.
+    const playlist = await app.inject({ method: 'GET', url: body.playlistUrl });
+    expect(playlist.statusCode).toBe(200);
+    expect(playlist.body).toContain('#EXTM3U');
+    const segmentName = playlist.body
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.endsWith('.ts'));
+    expect(segmentName).toBeDefined();
+    const segment = await app.inject({
+      method: 'GET',
+      url: `/api/stream/hls/${body.sessionId}/${segmentName}?token=${encodeURIComponent(token)}`,
+    });
+    expect(segment.statusCode).toBe(200);
+    expect(segment.rawPayload.length).toBeGreaterThan(0);
+
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('reports no burned subtitle (null) when none is requested', async () => {
+    const { fixture, token } = await grantedSubtitleFixture('burn-none.mkv');
+    const body = await startHlsOk(fixture.mediaFileId, token);
+    expect(body.burnSubtitleTrackId).toBeNull();
+    await stop(body.sessionId, token);
+  }, 60_000);
+
+  it('rejects an unknown or malformed burnSubtitle trackId with 400 VALIDATION', async () => {
+    const { fixture, token } = await grantedSubtitleFixture('burn-bad.mkv');
+    for (const bad of ['embedded-99', 'external-zzzzzzzzzzzzzzzz', 'not-a-track']) {
+      const response = await startHlsBurn(fixture.mediaFileId, token, { burnSubtitle: bad });
+      expect(response.statusCode, bad).toBe(400);
+      expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+    }
+  }, 60_000);
+
+  it('starts a DISTINCT session for a burn-in vs a no-subs request, reusing within a track', async () => {
+    const { fixture, token } = await grantedSubtitleFixture('burn-dedup.mkv');
+    const trackId = await embeddedSubtitleTrackId(fixture.mediaFileId, token);
+
+    const plain = await startHlsOk(fixture.mediaFileId, token);
+    const burned = (
+      await startHlsBurn(fixture.mediaFileId, token, { burnSubtitle: trackId })
+    ).json<StartBody>();
+    const burnedAgain = (
+      await startHlsBurn(fixture.mediaFileId, token, { burnSubtitle: trackId })
+    ).json<StartBody>();
+
+    expect(burned.sessionId).not.toBe(plain.sessionId);
+    expect(burnedAgain.sessionId).toBe(burned.sessionId);
+
+    await stop(plain.sessionId, token);
+    await stop(burned.sessionId, token);
+  }, 90_000);
 });
 
 describe('POST /api/stream/hls — concurrency cap', () => {

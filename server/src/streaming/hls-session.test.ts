@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildHlsFfmpegArgs,
   clampStartOffset,
+  escapeSubtitlesFilterPath,
   HLS_PLAYLIST_NAME,
   HLS_QUALITY_NAMES,
   HlsInputError,
@@ -17,6 +18,7 @@ import {
   isHlsQualityName,
   QUALITIES,
   TooManySessionsError,
+  type BurnSubtitle,
   type HlsSessionManagerOptions,
 } from './hls-session.js';
 
@@ -134,7 +136,9 @@ describe('buildHlsFfmpegArgs', () => {
   });
 
   it('downmixes to stereo (-ac 2) by default and when downmixStereo is true', () => {
-    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] }), '-ac')).toBe('2');
+    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] }), '-ac')).toBe(
+      '2',
+    );
     // Even a surround source is forced to stereo when the client is stereo-only.
     const forced = buildHlsFfmpegArgs({
       ...base,
@@ -237,15 +241,34 @@ describe('buildHlsFfmpegArgs', () => {
   });
 
   it('formats a fractional offset as trimmed fixed-point (no scientific notation)', () => {
-    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 5.5 }), '-ss')).toBe('5.5');
+    expect(
+      valueAfter(
+        buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 5.5 }),
+        '-ss',
+      ),
+    ).toBe('5.5');
     // Whole numbers stay integer-formatted; sub-ms precision is trimmed.
-    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 90 }), '-ss')).toBe('90');
-    expect(valueAfter(buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 1.2345 }), '-ss')).toBe('1.234');
+    expect(
+      valueAfter(
+        buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 90 }),
+        '-ss',
+      ),
+    ).toBe('90');
+    expect(
+      valueAfter(
+        buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: 1.2345 }),
+        '-ss',
+      ),
+    ).toBe('1.234');
   });
 
   it('omits -ss entirely for offset 0, undefined, negative, or non-finite', () => {
     for (const offset of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], startOffsetSec: offset });
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        startOffsetSec: offset,
+      });
       expect(args.includes('-ss'), String(offset)).toBe(false);
       // -i is still the very first input option after the global flags.
       expect(args[args.indexOf('-i') + 1]).toBe(base.inputPath);
@@ -255,9 +278,150 @@ describe('buildHlsFfmpegArgs', () => {
   it('never injects shell metacharacters via the seek offset', () => {
     const injection = /[;&|`$<>\n\r]/;
     for (const offset of [7, 5.5, 123.456, 3600]) {
-      const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['1080p'], startOffsetSec: offset });
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['1080p'],
+        startOffsetSec: offset,
+      });
       for (const arg of args) expect(injection.test(arg), JSON.stringify(arg)).toBe(false);
     }
+  });
+
+  // -- subtitle burn-in: -filter_complex composition ----------------------
+
+  /** The `-filter_complex` value, or undefined when the builder emitted `-vf`. */
+  function filterComplexOf(args: string[]): string | undefined {
+    return valueAfter(args, '-filter_complex');
+  }
+
+  it('burns an IMAGE sub by overlaying its stream then scaling the composite', () => {
+    const burn: BurnSubtitle = { type: 'overlay', subtitleIndex: 2 };
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], burnSubtitle: burn });
+
+    // The graph overlays the decoded subtitle stream [0:s:2] onto the video and
+    // THEN downscales the composited frame — one chain, ending in the mapped [v].
+    expect(filterComplexOf(args)).toBe(`[0:v:0][0:s:2]overlay,scale='min(iw,1280)':-2[v]`);
+    // -vf is gone (its scale moved inside the filter_complex); [v] is mapped as
+    // the video output; -sn is dropped (no subtitle stream is output-mapped).
+    expect(args).not.toContain('-vf');
+    expect(args).not.toContain('-sn');
+    const maps = args.reduce<string[]>((acc, a, i) => {
+      if (a === '-map') acc.push(args[i + 1] as string);
+      return acc;
+    }, []);
+    expect(maps).toEqual(['[v]', '0:a:0?']);
+  });
+
+  it('composes overlay + scale for every quality width cap', () => {
+    for (const name of HLS_QUALITY_NAMES) {
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES[name],
+        burnSubtitle: { type: 'overlay', subtitleIndex: 0 },
+      });
+      expect(filterComplexOf(args)).toBe(
+        `[0:v:0][0:s:0]overlay,scale='min(iw,${QUALITIES[name].maxWidth})':-2[v]`,
+      );
+    }
+  });
+
+  it('burns an EMBEDDED TEXT sub via the subtitles filter reading the input (si=)', () => {
+    const args = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['480p'],
+      burnSubtitle: { type: 'embedded-text', subtitleIndex: 1 },
+    });
+    // The subtitles filter renders si=1 from the input file, then scale, then [v].
+    expect(filterComplexOf(args)).toBe(
+      `[0:v:0]subtitles=filename=${base.inputPath}:si=1,scale='min(iw,854)':-2[v]`,
+    );
+    expect(args).not.toContain('-vf');
+  });
+
+  it('burns an EXTERNAL TEXT sidecar via the subtitles filter reading its path', () => {
+    const args = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      burnSubtitle: { type: 'external-text', filePath: '/media/movies/film.en.srt' },
+    });
+    // No si= for an external file (it holds a single subtitle track).
+    expect(filterComplexOf(args)).toBe(
+      `[0:v:0]subtitles=filename=/media/movies/film.en.srt,scale='min(iw,1280)':-2[v]`,
+    );
+  });
+
+  it('falls back to subtitle index 0 for an invalid overlay index', () => {
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        burnSubtitle: { type: 'overlay', subtitleIndex: bad },
+      });
+      expect(filterComplexOf(args), String(bad)).toBe(
+        `[0:v:0][0:s:0]overlay,scale='min(iw,1280)':-2[v]`,
+      );
+    }
+  });
+
+  it('keeps the audio selection intact alongside a burn-in', () => {
+    const args = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      audioStreamIndex: 2,
+      burnSubtitle: { type: 'overlay', subtitleIndex: 0 },
+    });
+    expect(args[args.lastIndexOf('-map') + 1]).toBe('0:a:2?');
+  });
+
+  it('leaves the non-burn args byte-for-byte unchanged (no -filter_complex)', () => {
+    const withoutBurn = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] });
+    const explicitUndefined = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      burnSubtitle: undefined,
+    });
+    expect(explicitUndefined).toEqual(withoutBurn);
+    expect(withoutBurn).not.toContain('-filter_complex');
+    expect(withoutBurn).toContain('-vf');
+    expect(withoutBurn).toContain('-sn');
+  });
+
+  it('never injects shell metacharacters via a burn-in filtergraph', () => {
+    const injection = /[;&|`$<>\n\r]/;
+    const burns: BurnSubtitle[] = [
+      { type: 'overlay', subtitleIndex: 3 },
+      { type: 'embedded-text', subtitleIndex: 0 },
+      { type: 'external-text', filePath: '/media/tv/Show S01E01.en.srt' },
+    ];
+    for (const burn of burns) {
+      const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['1080p'], burnSubtitle: burn });
+      for (const arg of args) expect(injection.test(arg), JSON.stringify(arg)).toBe(false);
+    }
+  });
+});
+
+describe('escapeSubtitlesFilterPath', () => {
+  it('passes an ordinary path through unchanged', () => {
+    expect(escapeSubtitlesFilterPath('/media/movies/film.en.srt')).toBe(
+      '/media/movies/film.en.srt',
+    );
+    expect(escapeSubtitlesFilterPath('/media/tv/Show S01E01.srt')).toBe(
+      '/media/tv/Show S01E01.srt',
+    );
+  });
+
+  it('escapes filtergraph-special characters so a filename cannot inject syntax', () => {
+    // Graph separators are neutralised (single backslash before each).
+    expect(escapeSubtitlesFilterPath('/m/a,b.srt')).toBe('/m/a\\,b.srt');
+    expect(escapeSubtitlesFilterPath('/m/a;b.srt')).toBe('/m/a\\;b.srt');
+    expect(escapeSubtitlesFilterPath('/m/a[b].srt')).toBe('/m/a\\[b\\].srt');
+  });
+
+  it('double-escapes the option separator and quote (two-level filtergraph rule)', () => {
+    // `:` and `'` are special at BOTH the arg and graph level, so they end up
+    // with two backslashes / a backslash-escaped quote respectively.
+    expect(escapeSubtitlesFilterPath('/m/a:b.srt')).toBe('/m/a\\\\:b.srt');
+    expect(escapeSubtitlesFilterPath("/m/a'b.srt")).toBe("/m/a\\\\\\'b.srt");
   });
 });
 
@@ -333,6 +497,7 @@ describe('HlsSessionManager (real ffmpeg)', () => {
   let transcodeDir: string;
   let outsideDir: string;
   let clipPath: string;
+  let srtPath: string;
   const managers: HlsSessionManager[] = [];
 
   function makeManager(overrides: Partial<HlsSessionManagerOptions> = {}): HlsSessionManager {
@@ -371,6 +536,12 @@ describe('HlsSessionManager (real ffmpeg)', () => {
       '-c:a', 'aac', '-ac', '2', '-shortest',
       clipPath,
     ]);
+
+    // An external subtitle sidecar inside the media root — burned via the real
+    // libass `subtitles` filter (an embedded image sub is hard to synthesize;
+    // the route suite exercises the embedded-text path end-to-end).
+    srtPath = path.join(mediaRoot, 'clip.en.srt');
+    await writeFile(srtPath, '1\n00:00:00,000 --> 00:00:04,000\nBurned in caption\n', 'utf8');
   }, 120_000);
 
   afterEach(async () => {
@@ -535,7 +706,7 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     expect(c.id).not.toBe(a.id);
   }, 90_000);
 
-  it('supersedes a user\'s prior different-offset session, leaving another user untouched', async () => {
+  it("supersedes a user's prior different-offset session, leaving another user untouched", async () => {
     const manager = makeManager();
     // Two users watching the SAME file at offset 0.
     const a0 = await startClip(manager, { userId: 'alice', id: 'file-shared', startOffsetSec: 0 });
@@ -558,12 +729,20 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     const manager = makeManager({ maxSessions: 2 });
     // Fill the cap: one for Bob, one for Alice (both at offset 0).
     await startClip(manager, { userId: 'bob', id: 'file-b', startOffsetSec: 0 });
-    const aliceStart = await startClip(manager, { userId: 'alice', id: 'file-a', startOffsetSec: 0 });
+    const aliceStart = await startClip(manager, {
+      userId: 'alice',
+      id: 'file-a',
+      startOffsetSec: 0,
+    });
     expect(manager.activeCount).toBe(2);
 
     // Alice seeks her file: her old session is superseded first, so this fits
     // under the cap instead of throwing TooManySessionsError.
-    const aliceSeek = await startClip(manager, { userId: 'alice', id: 'file-a', startOffsetSec: 4 });
+    const aliceSeek = await startClip(manager, {
+      userId: 'alice',
+      id: 'file-a',
+      startOffsetSec: 4,
+    });
     expect(aliceSeek.id).not.toBe(aliceStart.id);
     expect(manager.getSession(aliceStart.id)).toBeUndefined();
     expect(manager.activeCount).toBe(2);
@@ -573,9 +752,19 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     const manager = makeManager();
     const outside = path.join(outsideDir, 'secret.mp4');
     await execFileAsync(FFMPEG, [
-      '-y', '-v', 'error',
-      '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=10',
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-y',
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc=duration=1:size=320x240:rate=10',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
       outside,
     ]);
 
@@ -612,5 +801,69 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     expect(manager.getSession(b.id)).toBeUndefined();
     expect(existsSync(a.outputDir)).toBe(false);
     expect(existsSync(b.outputDir)).toBe(false);
+  }, 60_000);
+
+  // -- subtitle burn-in (real ffmpeg) -------------------------------------
+
+  /** Starts a session burning the external `clip.en.srt` sidecar into the video. */
+  const startBurn = (
+    manager: HlsSessionManager,
+    over: { trackId?: string; userId?: string } = {},
+  ) =>
+    manager.startSession({
+      mediaFile: { id: 'file-1', path: clipPath },
+      quality: '480p',
+      userId: over.userId ?? 'user-1',
+      burnSubtitle: {
+        trackId: over.trackId ?? 'external-0123456789abcdef',
+        spec: { type: 'external-text', filePath: srtPath },
+      },
+    });
+
+  it('burns a subtitle into a session that yields a serviceable playlist + segment', async () => {
+    const manager = makeManager();
+    const session = await startBurn(manager);
+
+    expect(session.state).toBe('ready');
+    expect(session.burnSubtitleTrackId).toBe('external-0123456789abcdef');
+    const playlist = await readFile(path.join(session.outputDir, HLS_PLAYLIST_NAME), 'utf8');
+    expect(playlist).toContain('#EXTM3U');
+    expect(segmentsInPlaylist(playlist).length).toBeGreaterThanOrEqual(1);
+  }, 60_000);
+
+  it('makes a burn-in session distinct from a no-subs session and per burned track', async () => {
+    const manager = makeManager();
+    const plain = await startClip(manager); // no burn
+    const burnA = await startBurn(manager, { trackId: 'external-aaaaaaaaaaaaaaaa' });
+    const burnAAgain = await startBurn(manager, { trackId: 'external-aaaaaaaaaaaaaaaa' });
+    const burnB = await startBurn(manager, { trackId: 'embedded-3' });
+
+    // No-burn vs burn => distinct; same track => reuse; different track => distinct.
+    expect(burnA.id).not.toBe(plain.id);
+    expect(burnAAgain.id).toBe(burnA.id);
+    expect(burnB.id).not.toBe(burnA.id);
+    expect(burnB.id).not.toBe(plain.id);
+  }, 90_000);
+
+  it('rejects a burn-in subtitle path outside the media roots with HlsInputError', async () => {
+    const manager = makeManager();
+    const outsideSrt = path.join(outsideDir, 'evil.srt');
+    await writeFile(outsideSrt, '1\n00:00:00,000 --> 00:00:01,000\nx\n', 'utf8');
+
+    const err = await manager
+      .startSession({
+        mediaFile: { id: 'file-1', path: clipPath },
+        quality: '480p',
+        userId: 'u',
+        burnSubtitle: {
+          trackId: 'external-ffffffffffffffff',
+          spec: { type: 'external-text', filePath: outsideSrt },
+        },
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HlsInputError);
+    expect((err as HlsInputError).reason).toBe('outside_roots');
+    // No scratch dir was left behind by the rejected start.
+    expect(existsSync(transcodeDir) ? await readdir(transcodeDir) : []).toEqual([]);
   }, 60_000);
 });
