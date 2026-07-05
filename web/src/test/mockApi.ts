@@ -313,6 +313,39 @@ function recentlyAdded(all: MediaItem[], limit: number): MediaItem[] {
     .slice(0, limit);
 }
 
+/** Match tier for the search rerank (lower is better), mirroring the server. */
+function searchRank(title: string, needle: string): number {
+  const lower = title.toLowerCase();
+  if (lower === needle) return 0;
+  if (lower.startsWith(needle)) return 1;
+  if (lower.includes(needle)) return 2;
+  return 3;
+}
+
+/**
+ * Access-scoped title/genre search across every accessible library's items,
+ * ranked exact → prefix → substring and capped — a faithful mirror of GET
+ * /api/search (routes/search.ts + lib/media-query.ts).
+ */
+function searchItems(all: MediaItem[], query: URLSearchParams): { results: MediaItem[]; query: string } {
+  const trimmed = (query.get('q') ?? '').trim();
+  if (trimmed === '') return { results: [], query: '' };
+  const needle = trimmed.toLowerCase();
+  const limit = Number(query.get('limit') ?? '20');
+  const matched = all.filter(
+    (item) =>
+      item.title.toLowerCase().includes(needle) ||
+      item.sortTitle.toLowerCase().includes(needle) ||
+      item.genres.some((genre) => genre.toLowerCase().includes(needle)),
+  );
+  const ranked = matched
+    .map((item, index) => ({ item, index, rank: searchRank(item.title, needle) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .slice(0, limit)
+    .map((entry) => entry.item);
+  return { results: ranked, query: trimmed };
+}
+
 /**
  * Installs a stateful mock of the Aura API on global.fetch. Handlers mirror the
  * real server contracts (response shapes, status codes, error envelope).
@@ -392,6 +425,14 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       }
       const query = new URL(url, 'http://localhost').searchParams;
       return { status: 200, body: listItems(state.items[libraryId] ?? [], query) };
+    }
+
+    if (path === '/api/search' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const query = new URL(url, 'http://localhost').searchParams;
+      // Scoped to accessible libraries (every returned library, as with browse).
+      const all = state.libraries.flatMap((library) => state.items[library.id] ?? []);
+      return { status: 200, body: searchItems(all, query) };
     }
 
     if (path === '/api/continue-watching' && method === 'GET') {

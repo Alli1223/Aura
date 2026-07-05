@@ -1,7 +1,8 @@
 import { Link } from 'react-router';
 
 import { usePublicSettings } from '../api/queries';
-import { MenuIcon, SearchIcon } from './Icons';
+import { MenuIcon } from './Icons';
+import { SearchBox } from './SearchBox';
 import { UserMenu } from './UserMenu';
 import styles from './TopBar.module.css';
 
@@ -33,16 +34,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         </Link>
       </div>
 
-      <div className={styles.search}>
-        <SearchIcon className={styles.searchIcon} width={18} height={18} />
-        <input
-          type="search"
-          className={styles.searchInput}
-          placeholder="Search"
-          aria-label="Search"
-          disabled
-        />
-      </div>
+      <SearchBox />
 
       <div className={styles.right}>
         <UserMenu />
