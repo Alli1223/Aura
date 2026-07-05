@@ -24,3 +24,10 @@ export const mediaFileStatusSchema = z.enum(MEDIA_FILE_STATUSES);
 export const STREAM_TYPES = ['video', 'audio', 'subtitle'] as const;
 export type StreamType = (typeof STREAM_TYPES)[number];
 export const streamTypeSchema = z.enum(STREAM_TYPES);
+
+// Personal API token scopes. "read" tokens may only make safe (GET/HEAD)
+// requests; "full" tokens may make any request the owning user could, still
+// bounded by the user's role (admin routes stay admin-only) and library grants.
+export const API_TOKEN_SCOPES = ['read', 'full'] as const;
+export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number];
+export const apiTokenScopeSchema = z.enum(API_TOKEN_SCOPES);

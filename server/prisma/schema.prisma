@@ -49,6 +49,31 @@ model User {
   grantedAccess   LibraryAccess[]  @relation("AccessGrantedBy")
   watchStates     WatchState[]
   auditLogs       AuditLog[]
+  apiTokens       ApiToken[]
+}
+
+/// Personal API tokens for third-party clients/scripts. Only a sha256 hash of
+/// the raw token is ever stored; the raw token (`aura_<base64url(32 bytes)>`)
+/// is shown exactly once, at creation. `prefix` keeps the first characters of
+/// the raw token so a user can recognise a token in listings without it ever
+/// revealing enough to authenticate. `scope` gates what the token may do
+/// (see API_TOKEN_SCOPES in src/db/constants.ts): "read" is GET/HEAD-only,
+/// "full" acts as the user (still bounded by the user's role and grants).
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  prefix     String
+  /// One of API_TOKEN_SCOPES: "read" | "full".
+  scope      String
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  @@index([userId])
 }
 
 /// Rotating refresh tokens. Only a hash of the token is stored. `replacedById`

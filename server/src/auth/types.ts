@@ -1,5 +1,5 @@
 import type { User } from '@prisma/client';
-import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyReply } from 'fastify';
 
 /** Access token lifetime. Kept short; the refresh token does the long haul. */
 export const ACCESS_TOKEN_TTL = '15m';
@@ -25,6 +25,20 @@ export interface AuthUser {
   createdAt: Date;
   lastLoginAt: Date | null;
 }
+
+/**
+ * How a request authenticated. 'jwt' is a normal access-token session; the
+ * others are personal API tokens (auth/api-tokens.ts).
+ */
+export type AuthMethod = 'jwt' | 'api-token';
+
+/**
+ * Effective capability of the authenticated principal. 'full' behaves as the
+ * user (still bounded by role + library grants); 'read' is restricted to safe
+ * (GET/HEAD) requests. JWT sessions are always 'full'; API tokens carry their
+ * stored scope.
+ */
+export type AuthScope = 'read' | 'full';
 
 export function toAuthUser(user: User): AuthUser {
   return {
@@ -55,5 +69,22 @@ declare module 'fastify' {
      * rejects disabled/deleted users and attaches the user to request.user.
      */
     authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  }
+
+  interface FastifyRequest {
+    /**
+     * Set by the `authenticate` preHandler once a principal is resolved:
+     * 'jwt' for access-token sessions, 'api-token' for personal API tokens.
+     * Undefined on unauthenticated requests. Routes that must never be reached
+     * with a token (e.g. token management, to stop self-propagation) gate on
+     * this.
+     */
+    authMethod?: AuthMethod;
+    /**
+     * Effective scope of the authenticated principal: 'full' for JWT sessions
+     * and full API tokens, 'read' for read-only API tokens. Undefined on
+     * unauthenticated requests.
+     */
+    authScope?: AuthScope;
   }
 }
