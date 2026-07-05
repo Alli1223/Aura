@@ -1,0 +1,81 @@
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-3);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.sectionLabel {
+  margin: var(--space-4) var(--space-3) var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.link:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.linkActive {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.linkActive svg {
+  color: var(--color-accent);
+}
+
+.libName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateRow,
+.emptyRow {
+  padding: var(--space-3) var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-faint);
+}
+
+.retry {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.retry:hover {
+  text-decoration: underline;
+}

@@ -1,0 +1,72 @@
+/*
+ * Aura design tokens. A small, deliberately restrained set for a dark media
+ * dashboard. Later screens extend this; keep additions here (not scattered).
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces (darkest → most elevated) */
+  --color-bg: #0d0f14;
+  --color-surface: #141821;
+  --color-surface-2: #1b202b;
+  --color-surface-3: #232935;
+  --color-border: #2a313f;
+  --color-border-strong: #3a4354;
+
+  /* Text */
+  --color-text: #e8ebf2;
+  --color-text-muted: #9aa4b6;
+  --color-text-faint: #6b7488;
+
+  /* Brand accent */
+  --color-accent: #7b5cff;
+  --color-accent-hover: #8b70ff;
+  --color-accent-active: #6a4bf0;
+  --color-accent-soft: rgba(123, 92, 255, 0.16);
+  --color-on-accent: #ffffff;
+
+  /* Status */
+  --color-danger: #f4576b;
+  --color-danger-soft: rgba(244, 87, 107, 0.14);
+  --color-success: #3ecf8e;
+  --color-success-soft: rgba(62, 207, 142, 0.14);
+
+  /* Focus ring */
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+  /* Spacing scale (4px base) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-menu: 0 12px 32px rgba(0, 0, 0, 0.55);
+
+  /* Typography */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.75rem;
+  --font-size-2xl: 2.5rem;
+
+  /* Layout */
+  --topbar-height: 60px;
+  --sidebar-width: 248px;
+  --z-drawer: 40;
+  --z-topbar: 30;
+  --z-menu: 50;
+}
