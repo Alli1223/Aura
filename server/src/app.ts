@@ -26,6 +26,7 @@ import { scanRoutes } from './routes/scan.js';
 import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
 import { userRoutes } from './routes/users.js';
+import { watchRoutes } from './routes/watch.js';
 
 export interface BuildAppOptions {
   /**
@@ -200,6 +201,9 @@ export function buildApp(
   void app.register(accessRoutes, { prefix: '/api' });
   // Scan routes span /api/libraries/:id/scan and /api/scan.
   void app.register(scanRoutes, { prefix: '/api', config });
+  // Watch-progress routes span /api/items/:id/{progress,watched,state},
+  // /api/items/state and /api/continue-watching.
+  void app.register(watchRoutes, { prefix: '/api' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
