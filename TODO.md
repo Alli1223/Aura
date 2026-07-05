@@ -41,7 +41,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 ## Phase 3 — Playback & Transcoding
 
 - [x] **stream-tokens** — Short-lived signed streaming tokens so `<video>`/HLS requests are authenticated without exposing JWTs in URLs; per-user, per-media scope checks
-- [ ] **direct-play** — Range-request file streaming endpoint with library-access + path-safety enforcement; content-type mapping
+- [x] **direct-play** — Range-request file streaming endpoint with library-access + path-safety enforcement; content-type mapping
 - [ ] **playback-decision** — Decision engine: client reports capabilities, server picks direct play vs transcode (container remux vs full transcode) per video/audio stream
 - [ ] **hls-transcoder** — ffmpeg HLS session manager: spawn with arg-array only, segment output to per-session scratch dir, playlist generation, session keepalive/timeout, cleanup on stop/disconnect, concurrent session limits
 - [ ] **transcode-seek** — Seeking within transcoded content (segment-window restarts at requested timestamp)
