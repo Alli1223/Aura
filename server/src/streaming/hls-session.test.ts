@@ -728,6 +728,57 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     expect(manager.activeCount).toBe(1);
   }, 60_000);
 
+  it('listSessions returns live sessions with the display fields and no process handles', async () => {
+    const manager = makeManager();
+    const session = await startClip(manager, { id: 'file-list', userId: 'user-list' });
+
+    const list = manager.listSessions();
+    expect(list).toHaveLength(1);
+    const [snapshot] = list;
+
+    // Exactly the documented display/identity fields — no more, no less.
+    expect(Object.keys(snapshot!).sort()).toEqual(
+      [
+        'audioTrackIndex',
+        'burnSubtitleTrackId',
+        'createdAt',
+        'downmixStereo',
+        'id',
+        'lastAccess',
+        'mediaFileId',
+        'quality',
+        'startOffsetSec',
+        'state',
+        'userId',
+      ].sort(),
+    );
+    expect(snapshot).toMatchObject({
+      id: session.id,
+      mediaFileId: 'file-list',
+      userId: 'user-list',
+      quality: '480p',
+      audioTrackIndex: 0,
+      downmixStereo: true,
+      startOffsetSec: 0,
+      burnSubtitleTrackId: undefined,
+      state: 'ready',
+    });
+    expect(typeof snapshot!.createdAt).toBe('number');
+    expect(typeof snapshot!.lastAccess).toBe('number');
+
+    // Never leak the ffmpeg child, its stderr, the input path or the scratch dir.
+    const leaked = snapshot as unknown as Record<string, unknown>;
+    expect(leaked.process).toBeUndefined();
+    expect(leaked.inputPath).toBeUndefined();
+    expect(leaked.outputDir).toBeUndefined();
+    expect(leaked.stderrTail).toBeUndefined();
+    expect(leaked.ready).toBeUndefined();
+
+    await manager.stopSession(session.id);
+    // A stopped session drops out of the snapshot.
+    expect(manager.listSessions()).toEqual([]);
+  }, 60_000);
+
   it('transcodes the whole clip to completion (ENDLIST + every segment on disk)', async () => {
     const manager = makeManager();
     const session = await startClip(manager);

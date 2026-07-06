@@ -1,12 +1,7 @@
 import { vi, type Mock } from 'vitest';
 
-import type {
-  AccessMatrix,
-  AdminSettings,
-  AdminUser,
-  ScanState,
-  TaskStatus,
-} from '../api/admin';
+import type { ActivitySession } from '../api/activity';
+import type { AccessMatrix, AdminSettings, AdminUser, ScanState, TaskStatus } from '../api/admin';
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
@@ -83,6 +78,31 @@ export function makeTask(overrides: Partial<TaskStatus> = {}): TaskStatus {
     nextRunAt: null,
     runCount: 0,
     ...overrides,
+  };
+}
+
+let activityCounter = 0;
+/** A live transcode session for the admin activity dashboard. */
+export function makeActivitySession(overrides: Partial<ActivitySession> = {}): ActivitySession {
+  activityCounter += 1;
+  return {
+    id: overrides.id ?? `session-${activityCounter}`,
+    userId: overrides.userId ?? `user-${activityCounter}`,
+    username: overrides.username ?? `viewer${activityCounter}`,
+    mediaFileId: overrides.mediaFileId ?? `file-${activityCounter}`,
+    mediaItemId: overrides.mediaItemId ?? `item-${activityCounter}`,
+    title: overrides.title ?? `Movie ${activityCounter}`,
+    itemType: overrides.itemType ?? 'movie',
+    quality: overrides.quality ?? '720p',
+    audioTrackIndex: overrides.audioTrackIndex ?? 0,
+    downmixStereo: overrides.downmixStereo ?? true,
+    startOffsetSec: overrides.startOffsetSec ?? 0,
+    burnSubtitleTrackId: overrides.burnSubtitleTrackId ?? null,
+    transcode: overrides.transcode ?? true,
+    burningSubtitle: overrides.burningSubtitle ?? false,
+    createdAt: overrides.createdAt ?? '2026-06-01T10:00:00.000Z',
+    lastAccess: overrides.lastAccess ?? '2026-06-01T10:01:00.000Z',
+    state: overrides.state ?? 'ready',
   };
 }
 
@@ -225,10 +245,7 @@ export function makeDirectDecision(mediaFileId: string): PlaybackDecision {
 }
 
 /** A transcode decision (mirrors the server's /stream/decide transcode shape). */
-export function makeTranscodeDecision(
-  mediaFileId: string,
-  quality = '720p',
-): PlaybackDecision {
+export function makeTranscodeDecision(mediaFileId: string, quality = '720p'): PlaybackDecision {
   return {
     action: 'transcode',
     reasons: ['video codec not supported by the client'],
@@ -313,6 +330,10 @@ export interface MockApiConfig {
   settings?: Partial<AdminSettings>;
   /** Scheduled tasks served by GET /tasks. */
   tasks?: TaskStatus[];
+  /** Live transcode sessions served by GET /activity/sessions. */
+  activitySessions?: ActivitySession[];
+  /** When true, GET /activity/sessions responds 500 (drives the error state). */
+  activitySessionsError?: boolean;
   /** Preset scan states keyed by library id. */
   scans?: Record<string, ScanState>;
   /** POST /tasks/:id/run returns 409 TASK_RUNNING for this task id. */
@@ -343,6 +364,7 @@ export interface MockApi {
     access: AccessMatrix;
     settings: AdminSettings;
     tasks: TaskStatus[];
+    activitySessions: ActivitySession[];
     scans: Record<string, ScanState>;
     decisions: Record<string, PlaybackDecision>;
     qualities: QualitiesResponse;
@@ -498,7 +520,10 @@ function searchRank(title: string, needle: string): number {
  * ranked exact → prefix → substring and capped — a faithful mirror of GET
  * /api/search (routes/search.ts + lib/media-query.ts).
  */
-function searchItems(all: MediaItem[], query: URLSearchParams): { results: MediaItem[]; query: string } {
+function searchItems(
+  all: MediaItem[],
+  query: URLSearchParams,
+): { results: MediaItem[]; query: string } {
   const trimmed = (query.get('q') ?? '').trim();
   if (trimmed === '') return { results: [], query: '' };
   const needle = trimmed.toLowerCase();
@@ -539,6 +564,7 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     access: config.access ?? { users: [], libraries: [] },
     settings: { ...DEFAULT_ADMIN_SETTINGS, ...config.settings },
     tasks: config.tasks ?? [],
+    activitySessions: config.activitySessions ?? [],
     scans: config.scans ?? {},
     decisions: config.decisions ?? {},
     qualities: config.qualities ?? makeQualities(),
@@ -959,6 +985,24 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
         return { status: 409, body: err('TASK_RUNNING', 'Task is already running') };
       }
       return { status: 202, body: { started: true, taskId } };
+    }
+
+    // ---- Admin: activity ---------------------------------------------------
+    if (path === '/api/activity/sessions' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      if (config.activitySessionsError === true) {
+        return { status: 500, body: err('INTERNAL', 'Internal server error') };
+      }
+      return { status: 200, body: { sessions: state.activitySessions } };
+    }
+    const activityKillMatch = /^\/api\/activity\/sessions\/([^/]+)$/.exec(path);
+    if (activityKillMatch !== null && method === 'DELETE') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const sessionId = decodeURIComponent(activityKillMatch[1] ?? '');
+      const existed = state.activitySessions.some((session) => session.id === sessionId);
+      if (!existed) return { status: 404, body: err('NOT_FOUND', 'Unknown session') };
+      state.activitySessions = state.activitySessions.filter((session) => session.id !== sessionId);
+      return { status: 204 };
     }
 
     // ---- Playback / streaming -----------------------------------------------

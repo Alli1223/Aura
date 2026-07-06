@@ -19,7 +19,10 @@ import { ACCESS_TOKEN_TTL } from './auth/types.js';
 import { loadConfig, RATE_LIMIT_TIME_WINDOW, type Config } from './config.js';
 import { sendError } from './lib/errors.js';
 import { loadOrCreateSecrets } from './lib/secrets.js';
+import { getSetting } from './lib/settings.js';
+import { HlsSessionManager } from './streaming/hls-session.js';
 import { accessRoutes } from './routes/access.js';
+import { activityRoutes } from './routes/activity.js';
 import { apiTokenRoutes } from './routes/api-tokens.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
@@ -203,6 +206,26 @@ export function buildApp(
   app.decorate('authenticate', authenticate);
   app.decorate('requireAdmin', requireAdmin);
 
+  // One HLS transcode session manager for the server lifetime, created here so
+  // it can be shared by BOTH the stream plugin (starts/serves/stops sessions)
+  // and the admin activity plugin (lists/kills them). Killed on server shutdown
+  // so no ffmpeg process or scratch dir leaks. Hardware-acceleration mode is
+  // read per-session (an admin toggle takes effect without a restart) with an
+  // automatic software fallback inside the manager.
+  const hls = new HlsSessionManager({
+    mediaRoots: config.MEDIA_ROOTS,
+    getTranscodeDir: () => getSetting('transcodeDir', app.log),
+    ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
+    idleMs: config.HLS_SESSION_IDLE_MS,
+    maxSessions: config.HLS_MAX_SESSIONS,
+    getHwAccel: () => getSetting('hwAccel', app.log),
+    hwAccelDevice: config.HWACCEL_DEVICE,
+    logger: app.log,
+  });
+  app.addHook('onClose', async () => {
+    await hls.shutdown();
+  });
+
   // OpenAPI spec + Swagger UI. `@fastify/swagger` must be registered before the
   // routes it documents (it captures them via an onRoute hook), so it goes here
   // ahead of every app.register(...routes...) below. The UI is served at
@@ -269,7 +292,11 @@ export function buildApp(
     prefix: '/api/stream',
     config,
     streamTokenSecret: secrets.streamTokenSecret,
+    hls,
   });
+  // Admin activity dashboard: live transcode sessions + kill-session action.
+  // Shares the HLS manager instance with the stream plugin above.
+  void app.register(activityRoutes, { prefix: '/api/activity', hls });
   // Per-user selectable quality rungs for the player's quality menu.
   void app.register(qualityRoutes, { prefix: '/api/qualities' });
   // Subtitle listing + WebVTT serving, same prefix and token-auth as streamRoutes.
