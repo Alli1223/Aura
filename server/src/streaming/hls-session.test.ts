@@ -1,11 +1,13 @@
-import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import type { FastifyBaseLogger } from 'fastify';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   buildHlsFfmpegArgs,
@@ -15,6 +17,7 @@ import {
   HLS_QUALITY_NAMES,
   HlsInputError,
   HlsSessionManager,
+  HlsStartError,
   isHlsQualityName,
   QUALITIES,
   TooManySessionsError,
@@ -396,6 +399,146 @@ describe('buildHlsFfmpegArgs', () => {
     for (const burn of burns) {
       const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['1080p'], burnSubtitle: burn });
       for (const arg of args) expect(injection.test(arg), JSON.stringify(arg)).toBe(false);
+    }
+  });
+
+  // -- hardware acceleration: encoder + hwaccel flags + scale chain --------
+
+  it('hwAccel none (explicit) is byte-for-byte the default software pipeline', () => {
+    const implicit = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'] });
+    const explicit = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], hwAccel: 'none' });
+    // REGRESSION-CRITICAL: enabling the feature must not change software output.
+    expect(explicit).toEqual(implicit);
+    expect(explicit).not.toContain('-hwaccel');
+    expect(valueAfter(explicit, '-c:v')).toBe('libx264');
+    expect(valueAfter(explicit, '-vf')).toBe(`scale='min(iw,1280)':-2`);
+  });
+
+  it('vaapi: h264_vaapi, device-bound hwaccel flags before -i, scale_vaapi', () => {
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], hwAccel: 'vaapi' });
+    expect(valueAfter(args, '-c:v')).toBe('h264_vaapi');
+    expect(valueAfter(args, '-hwaccel')).toBe('vaapi');
+    expect(valueAfter(args, '-hwaccel_device')).toBe('/dev/dri/renderD128');
+    expect(valueAfter(args, '-hwaccel_output_format')).toBe('vaapi');
+    expect(valueAfter(args, '-vf')).toBe(`scale_vaapi=w='min(iw,1280)':h=-2`);
+    // hwaccel is an INPUT option → must precede -i.
+    expect(args.indexOf('-hwaccel')).toBeLessThan(args.indexOf('-i'));
+    // Pixel format follows the GPU surface: no software -pix_fmt / -preset.
+    expect(args).not.toContain('-pix_fmt');
+    expect(args).not.toContain('-preset');
+    expect(valueAfter(args, '-profile:v')).toBe('high');
+    // Audio + HLS muxing are unchanged from software.
+    expect(valueAfter(args, '-c:a')).toBe('aac');
+    expect(valueAfter(args, '-b:v')).toBe(QUALITIES['720p'].videoBitrate);
+    expect(valueAfter(args, '-f')).toBe('hls');
+  });
+
+  it('nvenc: h264_nvenc via cuda, no device node, scale_cuda', () => {
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['1080p'], hwAccel: 'nvenc' });
+    expect(valueAfter(args, '-c:v')).toBe('h264_nvenc');
+    expect(valueAfter(args, '-hwaccel')).toBe('cuda');
+    expect(valueAfter(args, '-hwaccel_output_format')).toBe('cuda');
+    // CUDA selects its GPU by index — no DRM render node is passed.
+    expect(args).not.toContain('-hwaccel_device');
+    expect(valueAfter(args, '-vf')).toBe(`scale_cuda=w='min(iw,1920)':h=-2`);
+    expect(args.indexOf('-hwaccel')).toBeLessThan(args.indexOf('-i'));
+  });
+
+  it('qsv: h264_qsv, device-bound hwaccel flags, scale_qsv', () => {
+    const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['480p'], hwAccel: 'qsv' });
+    expect(valueAfter(args, '-c:v')).toBe('h264_qsv');
+    expect(valueAfter(args, '-hwaccel')).toBe('qsv');
+    expect(valueAfter(args, '-hwaccel_device')).toBe('/dev/dri/renderD128');
+    expect(valueAfter(args, '-hwaccel_output_format')).toBe('qsv');
+    expect(valueAfter(args, '-vf')).toBe(`scale_qsv=w='min(iw,854)':h=-2`);
+  });
+
+  it('auto resolves to the vaapi arg set', () => {
+    const auto = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], hwAccel: 'auto' });
+    const vaapi = buildHlsFfmpegArgs({ ...base, quality: QUALITIES['720p'], hwAccel: 'vaapi' });
+    expect(auto).toEqual(vaapi);
+  });
+
+  it('threads a custom hwAccelDevice into the vaapi/qsv flags', () => {
+    for (const mode of ['vaapi', 'qsv'] as const) {
+      const args = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        hwAccel: mode,
+        hwAccelDevice: '/dev/dri/renderD129',
+      });
+      expect(valueAfter(args, '-hwaccel_device')).toBe('/dev/dri/renderD129');
+    }
+  });
+
+  it('caps width per quality on every hardware scaler (never upscales)', () => {
+    const scaler: Record<'vaapi' | 'nvenc' | 'qsv', string> = {
+      vaapi: 'scale_vaapi',
+      nvenc: 'scale_cuda',
+      qsv: 'scale_qsv',
+    };
+    for (const [mode, filter] of Object.entries(scaler) as [keyof typeof scaler, string][]) {
+      for (const name of HLS_QUALITY_NAMES) {
+        const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES[name], hwAccel: mode });
+        expect(valueAfter(args, '-vf')).toBe(
+          `${filter}=w='min(iw,${QUALITIES[name].maxWidth})':h=-2`,
+        );
+      }
+    }
+  });
+
+  it('places hwaccel flags before BOTH -ss and -i when seeking', () => {
+    const args = buildHlsFfmpegArgs({
+      ...base,
+      quality: QUALITIES['720p'],
+      hwAccel: 'vaapi',
+      startOffsetSec: 30,
+    });
+    const hw = args.indexOf('-hwaccel');
+    const ss = args.indexOf('-ss');
+    const i = args.indexOf('-i');
+    expect(hw).toBeGreaterThanOrEqual(0);
+    expect(hw).toBeLessThan(ss);
+    expect(ss).toBeLessThan(i);
+    expect(args[i + 1]).toBe(base.inputPath);
+  });
+
+  it.each(['vaapi', 'nvenc', 'qsv'] as const)(
+    'a burn-in forces %s back to software (byte-identical to a software burn)',
+    (mode) => {
+      const hw = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        hwAccel: mode,
+        burnSubtitle: { type: 'overlay', subtitleIndex: 0 },
+      });
+      // No hardware pipeline: software encoder, filtergraph and pixel format.
+      expect(hw).not.toContain('-hwaccel');
+      expect(valueAfter(hw, '-c:v')).toBe('libx264');
+      expect(valueAfter(hw, '-filter_complex')).toBe(
+        `[0:v:0][0:s:0]overlay,scale='min(iw,1280)':-2[v]`,
+      );
+      expect(hw).toContain('-pix_fmt');
+      // Identical to requesting the same burn-in with software encoding.
+      const software = buildHlsFfmpegArgs({
+        ...base,
+        quality: QUALITIES['720p'],
+        hwAccel: 'none',
+        burnSubtitle: { type: 'overlay', subtitleIndex: 0 },
+      });
+      expect(hw).toEqual(software);
+    },
+  );
+
+  it('produces no shell metacharacters in any hardware arg set', () => {
+    const injection = /[;&|`$<>\n\r]/;
+    for (const mode of ['vaapi', 'nvenc', 'qsv', 'auto'] as const) {
+      for (const name of HLS_QUALITY_NAMES) {
+        const args = buildHlsFfmpegArgs({ ...base, quality: QUALITIES[name], hwAccel: mode });
+        for (const arg of args) {
+          expect(injection.test(arg), `${mode}/${name}: ${JSON.stringify(arg)}`).toBe(false);
+        }
+      }
     }
   });
 });
@@ -866,4 +1009,217 @@ describe('HlsSessionManager (real ffmpeg)', () => {
     // No scratch dir was left behind by the rejected start.
     expect(existsSync(transcodeDir) ? await readdir(transcodeDir) : []).toEqual([]);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Automatic software fallback (hw-accel). No GPU and no real ffmpeg: the
+// process spawner is faked so a HARDWARE attempt can deterministically fail
+// (with a chosen stderr) and a SOFTWARE attempt succeed. This proves the retry
+// wiring — hardware error => one software retry; non-hardware error => none.
+// The hardware ARG SHAPES are covered by the pure buildHlsFfmpegArgs tests
+// above; only the fallback control flow is exercised here.
+// ---------------------------------------------------------------------------
+
+/** Minimal stderr stub: an emitter with a no-op setEncoding. */
+class FakeStderr extends EventEmitter {
+  setEncoding(): this {
+    return this;
+  }
+}
+
+/** Minimal ChildProcess stand-in whose kill() resolves as an exit. */
+class FakeChild extends EventEmitter {
+  readonly stderr = new FakeStderr();
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  kill(signal?: NodeJS.Signals): boolean {
+    if (this.exitCode !== null || this.signalCode !== null) return true;
+    this.signalCode = signal ?? 'SIGTERM';
+    this.emit('exit', null, this.signalCode);
+    return true;
+  }
+}
+
+describe('HlsSessionManager hardware fallback (fake spawn)', () => {
+  let root: string;
+  let mediaRoot: string;
+  let transcodeDir: string;
+  let inputPath: string;
+  const managers: HlsSessionManager[] = [];
+
+  beforeAll(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'aura-hls-hw-'));
+    mediaRoot = path.join(root, 'media');
+    transcodeDir = path.join(root, 'transcodes');
+    await mkdir(mediaRoot, { recursive: true });
+    await mkdir(transcodeDir, { recursive: true });
+    // A real regular file inside the media root (containment-checked before any
+    // spawn). Its contents are irrelevant — ffmpeg is faked.
+    inputPath = path.join(mediaRoot, 'input.mp4');
+    await writeFile(inputPath, 'not-real-media', 'utf8');
+  });
+
+  afterEach(async () => {
+    await Promise.all(managers.map((m) => m.shutdown()));
+    managers.length = 0;
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /**
+   * Fake spawner: a HARDWARE attempt (args include `-hwaccel`) fails with the
+   * given stderr; a SOFTWARE attempt writes a serviceable playlist so readiness
+   * resolves. Records the args of every spawn so the test can assert which
+   * pipeline ran.
+   */
+  function makeSpawn(hwStderr: string): { fn: typeof spawn; calls: string[][] } {
+    const calls: string[][] = [];
+    const fn = ((_command: string, args: readonly string[]): ChildProcess => {
+      calls.push([...args]);
+      const child = new FakeChild();
+      const playlistPath = args[args.length - 1] as string;
+      if (args.includes('-hwaccel')) {
+        // Emit after listeners attach (next tick), stderr before exit.
+        setImmediate(() => {
+          child.stderr.emit('data', hwStderr);
+          child.exitCode = 1;
+          child.emit('exit', 1, null);
+        });
+      } else {
+        writeFileSync(
+          playlistPath,
+          '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment00000.ts\n',
+        );
+        // Leave the child "running"; the readiness poller sees the playlist.
+      }
+      return child as unknown as ChildProcess;
+    }) as unknown as typeof spawn;
+    return { fn, calls };
+  }
+
+  function makeManager(overrides: Partial<HlsSessionManagerOptions>): HlsSessionManager {
+    const manager = new HlsSessionManager({
+      mediaRoots: [mediaRoot],
+      getTranscodeDir: () => transcodeDir,
+      ffmpegPath: 'ffmpeg-not-used',
+      idleMs: 60_000,
+      maxSessions: 3,
+      readinessTimeoutMs: 5_000,
+      ...overrides,
+    });
+    managers.push(manager);
+    return manager;
+  }
+
+  function fakeLogger(warn: ReturnType<typeof vi.fn>): FastifyBaseLogger {
+    const logger = {
+      warn,
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      fatal: vi.fn(),
+      trace: vi.fn(),
+      child: () => logger,
+    };
+    return logger as unknown as FastifyBaseLogger;
+  }
+
+  it('falls back to software when a hardware start fails with a hardware error', async () => {
+    const { fn, calls } = makeSpawn(
+      '[h264_vaapi @ 0x1] Failed to open the drm device /dev/dri/renderD128',
+    );
+    const warn = vi.fn();
+    const manager = makeManager({
+      getHwAccel: () => 'vaapi',
+      spawnFn: fn,
+      logger: fakeLogger(warn),
+    });
+
+    const session = await manager.startSession({
+      mediaFile: { id: 'f1', path: inputPath },
+      quality: '720p',
+      userId: 'u1',
+    });
+
+    expect(session.state).toBe('ready');
+    // Two spawns: hardware first, then the software retry.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain('-hwaccel');
+    expect(calls[0]).toContain('h264_vaapi');
+    expect(calls[1]).not.toContain('-hwaccel');
+    expect(calls[1]).toContain('libx264');
+    // The fallback was logged as a warning.
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves auto to a hardware attempt then falls back to software', async () => {
+    const { fn, calls } = makeSpawn('No VA display found for device /dev/dri/renderD128');
+    const manager = makeManager({ getHwAccel: () => 'auto', spawnFn: fn });
+
+    const session = await manager.startSession({
+      mediaFile: { id: 'f-auto', path: inputPath },
+      quality: '480p',
+      userId: 'u-auto',
+    });
+
+    expect(session.state).toBe('ready');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain('h264_vaapi'); // auto -> vaapi
+    expect(calls[1]).toContain('libx264');
+  });
+
+  it('does NOT retry when a hardware start fails with a non-hardware error', async () => {
+    const { fn, calls } = makeSpawn('Invalid data found when processing input');
+    const manager = makeManager({ getHwAccel: () => 'vaapi', spawnFn: fn });
+
+    const err = await manager
+      .startSession({ mediaFile: { id: 'f2', path: inputPath }, quality: '720p', userId: 'u2' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(HlsStartError);
+    // Exactly one spawn — a non-hardware failure must not loop into a retry.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('-hwaccel');
+    // The failed session was cleaned up (no leaked slot or scratch dir).
+    expect(manager.activeCount).toBe(0);
+    expect(existsSync(transcodeDir) ? await readdir(transcodeDir) : []).toEqual([]);
+  });
+
+  it('never attempts hardware when the mode is none (single software spawn)', async () => {
+    const { fn, calls } = makeSpawn('unused');
+    const manager = makeManager({ getHwAccel: () => 'none', spawnFn: fn });
+
+    const session = await manager.startSession({
+      mediaFile: { id: 'f3', path: inputPath },
+      quality: '720p',
+      userId: 'u3',
+    });
+
+    expect(session.state).toBe('ready');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain('-hwaccel');
+    expect(calls[0]).toContain('libx264');
+  });
+
+  it('a burn-in with a hardware mode transcodes in software with no hardware attempt', async () => {
+    const { fn, calls } = makeSpawn('unused');
+    const manager = makeManager({ getHwAccel: () => 'vaapi', spawnFn: fn });
+
+    const session = await manager.startSession({
+      mediaFile: { id: 'f4', path: inputPath },
+      quality: '720p',
+      userId: 'u4',
+      burnSubtitle: { trackId: 'embedded-1', spec: { type: 'embedded-text', subtitleIndex: 1 } },
+    });
+
+    expect(session.state).toBe('ready');
+    expect(session.burnSubtitleTrackId).toBe('embedded-1');
+    // One software spawn: the burn-in rule skipped hardware entirely.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain('-hwaccel');
+    expect(calls[0]).toContain('libx264');
+    expect(calls[0]).toContain('-filter_complex');
+  });
 });

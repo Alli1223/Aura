@@ -16,3 +16,28 @@ services:
       - ./media/anime:/media/anime:ro
       - ./media/recordings:/media/recordings:ro
       - ./media/other:/media/other:ro
+    # -----------------------------------------------------------------------
+    # Hardware-accelerated transcoding (OPTIONAL — software is the default).
+    # Software transcoding needs nothing here; enable a block below ONLY if you
+    # set the `hwAccel` server setting to vaapi/nvenc/qsv/auto (Admin → Settings)
+    # AND your host has the matching GPU. Aura auto-falls back to software if the
+    # device is missing or the driver rejects the pipeline, so a wrong choice
+    # degrades gracefully rather than breaking playback.
+    #
+    # Intel/AMD VAAPI or Intel QSV — pass the DRM render node (default device is
+    # /dev/dri/renderD128; override with the HWACCEL_DEVICE env if yours differs):
+    # devices:
+    #   - /dev/dri:/dev/dri
+    #
+    # NVIDIA NVENC — install the NVIDIA Container Toolkit on the host, then
+    # request the GPU (no /dev/dri needed; CUDA selects the GPU by index):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, video]
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=all
