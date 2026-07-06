@@ -52,7 +52,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **subtitles** — Extract embedded subtitle tracks, discover external .srt/.ass, convert to WebVTT for web playback, burn-in path for image-based subs (PGS/VOBSUB)
 - [x] **subtitle-burn-in** — Burn image-based subtitle tracks (PGS/HDMV, VOBSUB/DVD, DVB) into the video via the HLS transcoder when a client selects one — these cannot be converted to WebVTT, so the subtitles module surfaces them with `kind: 'image'` and the player must request a burn-in transcode. Depends on `subtitles` + `hls-transcoder`
 - [x] **audio-tracks** — Audio track listing & selection (transcode remaps chosen track), channel downmix for stereo clients
-- [ ] **hw-accel** — Optional hardware acceleration (VAAPI/NVENC/QSV) via settings + compose device passthrough docs; automatic software fallback
+- [x] **hw-accel** — Optional hardware acceleration (VAAPI/NVENC/QSV) via settings + compose device passthrough docs; automatic software fallback
 - [x] **watch-progress** — Playback progress reporting endpoint, resume positions, watched/unwatched state, per-user (writes gated by library access)
 
 ## Phase 4 — Web App
