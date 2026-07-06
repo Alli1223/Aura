@@ -12,8 +12,21 @@ export interface AuthUser {
   role: UserRole;
   isEnabled: boolean;
   mustChangePassword: boolean;
+  /** Preferred playback quality (a ladder rung name), or null for none. */
+  preferredQuality: string | null;
+  /** Preferred subtitle language (ISO code or "off"), or null for none. */
+  preferredSubtitleLanguage: string | null;
+  /** Whether the player auto-advances to the next episode. */
+  autoplayNextEpisode: boolean;
   createdAt: string;
   lastLoginAt: string | null;
+}
+
+/** Playback preferences a user can update on themselves (PATCH /users/me). */
+export interface PlaybackPreferencesInput {
+  preferredQuality?: string | null;
+  preferredSubtitleLanguage?: string | null;
+  autoplayNextEpisode?: boolean;
 }
 
 export interface Library {

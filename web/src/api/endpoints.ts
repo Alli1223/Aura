@@ -1,5 +1,11 @@
 import { apiRequest } from './client';
-import type { AuthSession, AuthUser, Library, PublicSettings } from './types';
+import type {
+  AuthSession,
+  AuthUser,
+  Library,
+  PlaybackPreferencesInput,
+  PublicSettings,
+} from './types';
 
 // ---- Auth -------------------------------------------------------------------
 
@@ -60,5 +66,18 @@ export function changePassword(input: ChangePasswordInput): Promise<void> {
 
 export async function getMe(): Promise<AuthUser> {
   const data = await apiRequest<{ user: AuthUser }>('/users/me');
+  return data.user;
+}
+
+/**
+ * Updates the current user's playback preferences (PATCH /users/me). Only the
+ * fields present are changed; `null` clears a preference. Returns the updated
+ * safe user shape so the caller can sync the auth context.
+ */
+export async function updatePreferences(input: PlaybackPreferencesInput): Promise<AuthUser> {
+  const data = await apiRequest<{ user: AuthUser }>('/users/me', {
+    method: 'PATCH',
+    body: input,
+  });
   return data.user;
 }

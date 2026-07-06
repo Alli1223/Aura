@@ -45,6 +45,17 @@ model User {
   /// (unrestricted). Enforced server-side alongside library grants on every
   /// media surface (see src/lib/content-rating.ts + src/auth/access.ts).
   maxContentRating   String?
+  /// Preferred playback quality (a quality-ladder rung name), or null for "no
+  /// preference" (the server default applies). The player starts at this rung,
+  /// clamped to the user's effective max. Purely a UI default — the server-side
+  /// max-quality cap is still enforced on the streaming routes.
+  preferredQuality         String?
+  /// Preferred subtitle language: an ISO code (e.g. "eng"), the sentinel "off"
+  /// (never auto-enable subtitles), or null for "no preference". Used to
+  /// pre-select a matching subtitle track in the player.
+  preferredSubtitleLanguage String?
+  /// Whether the player auto-advances to the next episode when one finishes.
+  autoplayNextEpisode      Boolean  @default(true)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   lastLoginAt        DateTime?

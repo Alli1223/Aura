@@ -467,6 +467,143 @@ describe('PlayerPage — session lifecycle robustness', () => {
   });
 });
 
+describe('PlayerPage — user playback preferences', () => {
+  it('starts a transcode at the user\'s preferred quality', async () => {
+    const { api } = setup(
+      {
+        session: makeUser({ preferredQuality: '480p' }),
+        decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') },
+        qualities: makeQualities(),
+      },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+    // The first HLS start uses the preference (480p), not the decision's 720p.
+    expect(hlsStartCalls(api, 'file-1')[0]?.searchParams.get('quality')).toBe('480p');
+  });
+
+  it('clamps a preferred quality above the effective max down to the cap', async () => {
+    const { api } = setup(
+      {
+        session: makeUser({ preferredQuality: '1080p' }),
+        decisions: { 'file-1': makeTranscodeDecision('file-1', '480p') },
+        // Effective max is 480p: 1080p is not selectable and must clamp to 480p.
+        qualities: makeQualities({
+          maxQuality: '480p',
+          defaultQuality: '480p',
+          qualities: [
+            { name: '480p', maxWidth: 854, videoBitrate: '1400k', audioBitrate: '128k' },
+            { name: '360p', maxWidth: 640, videoBitrate: '800k', audioBitrate: '96k' },
+          ],
+        }),
+      },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+    expect(hlsStartCalls(api, 'file-1')[0]?.searchParams.get('quality')).toBe('480p');
+  });
+
+  it('pre-selects the subtitle track matching the preferred language', async () => {
+    setup(
+      {
+        session: makeUser({ preferredSubtitleLanguage: 'fra' }),
+        decisions: { 'file-1': makeDirectDecision('file-1') },
+        subtitles: {
+          'file-1': [
+            makeSubtitleTrack({ id: 'embedded-2', kind: 'text', language: 'eng', label: 'English' }),
+            makeSubtitleTrack({ id: 'embedded-3', kind: 'text', language: 'fra', label: 'French' }),
+          ],
+        },
+      },
+      '/player/file-1',
+    );
+
+    await screen.findByTestId('player-video');
+    const toggle = await screen.findByRole('button', { name: 'Toggle subtitles' });
+    // The matching (French) track is auto-enabled on load.
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'true'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Subtitles/ }));
+    expect(screen.getByRole('menuitemradio', { name: /French/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('menuitemradio', { name: /English/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  it('does not auto-enable subtitles when the preference is "off"', async () => {
+    setup(
+      {
+        session: makeUser({ preferredSubtitleLanguage: 'off' }),
+        decisions: { 'file-1': makeDirectDecision('file-1') },
+        subtitles: {
+          'file-1': [
+            makeSubtitleTrack({ id: 'embedded-2', kind: 'text', language: 'eng', label: 'English' }),
+          ],
+        },
+      },
+      '/player/file-1',
+    );
+
+    const toggle = await screen.findByRole('button', { name: 'Toggle subtitles' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  const renderWithNextQueue = (session: ReturnType<typeof makeUser>) => {
+    installMockApi({
+      session,
+      decisions: { 'file-1': makeDirectDecision('file-1') },
+    });
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/player/file-1',
+            state: {
+              queue: [{ mediaFileId: 'file-2', itemId: 'item-2', title: 'Episode 2' }],
+            },
+          },
+        ]}
+      >
+        <Providers queryClient={createTestQueryClient()}>
+          <AppRoutes />
+        </Providers>
+      </MemoryRouter>,
+    );
+  };
+
+  it('auto-advances (shows the countdown) when autoplay is on', async () => {
+    renderWithNextQueue(makeUser({ autoplayNextEpisode: true }));
+
+    const video = await screen.findByTestId('player-video');
+    fireEvent.ended(video);
+
+    await screen.findByRole('dialog', { name: 'Playback finished' });
+    expect(screen.getByText('Up next')).toBeInTheDocument();
+    // The countdown ("starting in Ns") is the auto-advance behaviour.
+    expect(screen.getByText(/starting in/i)).toBeInTheDocument();
+  });
+
+  it('offers "Up next" without a countdown when autoplay is off', async () => {
+    renderWithNextQueue(makeUser({ autoplayNextEpisode: false }));
+
+    const video = await screen.findByTestId('player-video');
+    fireEvent.ended(video);
+
+    await screen.findByRole('dialog', { name: 'Playback finished' });
+    expect(screen.getByText('Up next')).toBeInTheDocument();
+    // No auto-advance: the countdown text is absent, but a manual Play now remains.
+    expect(screen.queryByText(/starting in/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Play now/ })).toBeInTheDocument();
+  });
+});
+
 describe('PlayerPage — keyboard shortcuts', () => {
   it('space toggles play/pause and "f" requests fullscreen', async () => {
     setup({ decisions: { 'file-1': makeDirectDecision('file-1') } }, '/player/file-1');

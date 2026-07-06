@@ -37,6 +37,9 @@ interface PublicUser {
   mustChangePassword: boolean;
   maxQuality: string | null;
   maxContentRating: string | null;
+  preferredQuality: string | null;
+  preferredSubtitleLanguage: string | null;
+  autoplayNextEpisode: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -691,6 +694,110 @@ describe('PATCH /api/users/me', () => {
     const invalid = await api('PATCH', '/api/users/me', user.accessToken, { email: 'nope' });
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json<ErrorBody>().error.code).toBe('VALIDATION');
+  });
+
+  it('rejects an empty body with 400 VALIDATION (at least one field required)', async () => {
+    const user = await registerUser();
+    const response = await api('PATCH', '/api/users/me', user.accessToken, {});
+    expect(response.statusCode).toBe(400);
+    expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+  });
+});
+
+describe('PATCH /api/users/me (playback preferences)', () => {
+  it('defaults to no preferences and autoplay on for a fresh user', async () => {
+    const user = await registerUser();
+
+    const me = await api('GET', '/api/users/me', user.accessToken);
+    expect(me.statusCode).toBe(200);
+    const body = me.json<{ user: PublicUser }>().user;
+    expect(body.preferredQuality).toBeNull();
+    expect(body.preferredSubtitleLanguage).toBeNull();
+    expect(body.autoplayNextEpisode).toBe(true);
+  });
+
+  it('updates quality, subtitle language and autoplay, then serializes them', async () => {
+    const user = await registerUser();
+
+    const response = await api('PATCH', '/api/users/me', user.accessToken, {
+      preferredQuality: '720p',
+      preferredSubtitleLanguage: 'ENG',
+      autoplayNextEpisode: false,
+    });
+    expect(response.statusCode).toBe(200);
+    const updated = response.json<{ user: PublicUser }>().user;
+    expect(updated.preferredQuality).toBe('720p');
+    // Short language codes are trimmed + lower-cased before storage.
+    expect(updated.preferredSubtitleLanguage).toBe('eng');
+    expect(updated.autoplayNextEpisode).toBe(false);
+
+    const db = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(db.preferredQuality).toBe('720p');
+    expect(db.preferredSubtitleLanguage).toBe('eng');
+    expect(db.autoplayNextEpisode).toBe(false);
+  });
+
+  it('accepts the "off" sentinel for subtitles and updates one field at a time', async () => {
+    const user = await registerUser();
+
+    const off = await api('PATCH', '/api/users/me', user.accessToken, {
+      preferredSubtitleLanguage: 'off',
+    });
+    expect(off.statusCode).toBe(200);
+    expect(off.json<{ user: PublicUser }>().user.preferredSubtitleLanguage).toBe('off');
+    // Quality untouched by a subtitle-only update.
+    expect(off.json<{ user: PublicUser }>().user.preferredQuality).toBeNull();
+  });
+
+  it('clears preferences with null', async () => {
+    const user = await registerUser();
+    await api('PATCH', '/api/users/me', user.accessToken, {
+      preferredQuality: '480p',
+      preferredSubtitleLanguage: 'fra',
+    });
+
+    const cleared = await api('PATCH', '/api/users/me', user.accessToken, {
+      preferredQuality: null,
+      preferredSubtitleLanguage: null,
+    });
+    expect(cleared.statusCode).toBe(200);
+    const body = cleared.json<{ user: PublicUser }>().user;
+    expect(body.preferredQuality).toBeNull();
+    expect(body.preferredSubtitleLanguage).toBeNull();
+  });
+
+  it('rejects an invalid quality, language or autoplay with 400 VALIDATION', async () => {
+    const user = await registerUser();
+    for (const payload of [
+      { preferredQuality: '4k' },
+      { preferredQuality: 1080 },
+      { preferredSubtitleLanguage: 'e' },
+      { preferredSubtitleLanguage: 'toolongcode' },
+      { preferredSubtitleLanguage: 'en-US' },
+      { autoplayNextEpisode: 'yes' },
+    ]) {
+      const response = await api('PATCH', '/api/users/me', user.accessToken, payload);
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
+    }
+  });
+
+  it('surfaces the preferences after login and refresh (serializer)', async () => {
+    const user = await registerUser();
+    await api('PATCH', '/api/users/me', user.accessToken, {
+      preferredQuality: '1080p',
+      autoplayNextEpisode: false,
+    });
+
+    const relogin = await login(user.username, PASSWORD);
+    expect(relogin.statusCode).toBe(200);
+    const loginUser = relogin.json<{ user: PublicUser }>().user;
+    expect(loginUser.preferredQuality).toBe('1080p');
+    expect(loginUser.autoplayNextEpisode).toBe(false);
+
+    const refreshed = await refresh(refreshCookie(relogin));
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json<{ user: PublicUser }>().user.preferredQuality).toBe('1080p');
   });
 });
 

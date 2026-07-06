@@ -46,6 +46,24 @@
   max-width: 400px;
 }
 
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.toggle input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--color-accent, var(--color-primary, currentColor));
+  cursor: pointer;
+}
+
+.toggle .field-label {
+  margin: 0;
+}
+
 .hint {
   margin-bottom: var(--space-4);
   color: var(--color-text-muted);
