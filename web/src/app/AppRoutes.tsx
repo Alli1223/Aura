@@ -1,6 +1,8 @@
+import { Suspense, lazy } from 'react';
 import { Route, Routes } from 'react-router';
 
 import { AppShell } from '../components/AppShell';
+import { FullPageLoader } from '../components/Spinner';
 import { HomePage } from '../pages/HomePage';
 import { ItemDetailPage } from '../pages/ItemDetailPage';
 import { LibraryPage } from '../pages/LibraryPage';
@@ -20,6 +22,12 @@ import { PublicOnly } from '../routes/PublicOnly';
 import { RequireAdmin } from '../routes/RequireAdmin';
 import { RequireAuth } from '../routes/RequireAuth';
 
+// The player pulls in hls.js (a large dependency only ever needed on this
+// route), so it is code-split out of the main bundle and loaded on demand.
+const PlayerPage = lazy(() =>
+  import('../pages/PlayerPage').then((module) => ({ default: module.PlayerPage })),
+);
+
 /** The full route tree, gated on the boot refresh settling first. */
 export function AppRoutes() {
   return (
@@ -31,8 +39,16 @@ export function AppRoutes() {
           <Route path="/register" element={<RegisterPage />} />
         </Route>
 
-        {/* Private: everything behind the authenticated shell. */}
+        {/* Private: everything behind auth. The player is full-screen (no shell). */}
         <Route element={<RequireAuth />}>
+          <Route
+            path="player/:mediaFileId"
+            element={
+              <Suspense fallback={<FullPageLoader label="Loading player" />}>
+                <PlayerPage />
+              </Suspense>
+            }
+          />
           <Route element={<AppShell />}>
             <Route index element={<HomePage />} />
             <Route path="library/:id" element={<LibraryPage />} />
