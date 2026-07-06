@@ -259,6 +259,27 @@ model Setting {
   updatedAt DateTime @updatedAt
 }
 
+/// Outbound webhook: an admin-registered HTTP endpoint that receives a signed
+/// POST when a subscribed event fires (see WEBHOOK_EVENT_TYPES in
+/// src/lib/webhooks.ts). `events` is a JSON-encoded string array of event
+/// types. `secret` is the HMAC-SHA256 key used to sign each delivery
+/// (X-Aura-Signature) — SECRET: never returned in full by any route (masked in
+/// listings, revealed once at creation). `lastStatus`/`lastDeliveryAt` record
+/// the outcome of the most recent delivery attempt (status null = the request
+/// never got an HTTP response, e.g. timeout/network error).
+model Webhook {
+  id             String    @id @default(cuid())
+  name           String
+  url            String
+  /// JSON-encoded array of WEBHOOK_EVENT_TYPES this webhook subscribes to.
+  events         String
+  secret         String
+  enabled        Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  lastStatus     Int?
+  lastDeliveryAt DateTime?
+}
+
 model AuditLog {
   id         String   @id @default(cuid())
   userId     String?

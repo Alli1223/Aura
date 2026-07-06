@@ -244,6 +244,12 @@ const envSchema = z
      * Default 7.
      */
     BACKUP_RETENTION: z.coerce.number().int().min(1).max(365).default(7),
+    /**
+     * Per-attempt timeout (ms) for an outbound webhook delivery. Each delivery
+     * makes up to two attempts (one retry); the AbortController fires this
+     * timeout on each. Default 5s; bounded at 100ms below and 60s above.
+     */
+    WEBHOOK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
   })
   .transform((env) => ({
     ...env,

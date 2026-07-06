@@ -6,6 +6,11 @@ import type { FastifyBaseLogger } from 'fastify';
 
 import { getPrisma } from '../db/client.js';
 import { isPathWithin, validateLibraryPath } from '../lib/media-roots.js';
+import {
+  dispatchEvent,
+  MEDIA_ADDED_EMISSION_CAP,
+  type DispatchFn,
+} from '../lib/webhooks.js';
 import { isVideoFile, probeFile, type ProbeResult } from '../media/ffprobe.js';
 import { persistProbe } from '../media/persist-probe.js';
 import { parseEpisodePath, parseMoviePath } from './filename-parser.js';
@@ -89,6 +94,11 @@ export interface ScanOptions {
   concurrency?: number;
   /** Called with a stats snapshot as counters change (live progress). */
   onProgress?: (stats: ScanStats) => void;
+  /**
+   * Event dispatcher for `media.added` webhooks; defaults to the real
+   * dispatchEvent. Injectable so tests can assert emission with a spy.
+   */
+  dispatch?: DispatchFn;
   log?: FastifyBaseLogger;
 }
 
@@ -279,6 +289,13 @@ function planItem(
 class ItemResolver {
   private readonly cache = new Map<string, MediaItem>();
 
+  /**
+   * Top-level items (movies/shows) newly CREATED during this scan — the source
+   * of `media.added` events. Seasons/episodes are excluded (only the show is a
+   * top-level "new media" announcement).
+   */
+  readonly newTopLevelItems: MediaItem[] = [];
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly libraryId: string,
@@ -298,6 +315,9 @@ class ItemResolver {
     if (item === null) {
       item = await create();
       this.stats.itemsCreated += 1;
+      if (item.type === 'movie' || item.type === 'show') {
+        this.newTopLevelItems.push(item);
+      }
     }
     this.cache.set(key, item);
     return item;
@@ -385,6 +405,35 @@ class ItemResolver {
   }
 }
 
+/**
+ * Fires one `media.added` event per newly-created top-level item. Flood guard:
+ * when a scan created more than MEDIA_ADDED_EMISSION_CAP new items (e.g. a bulk
+ * first scan) the whole run's emissions are skipped so subscribers are not
+ * hammered — the items are still added, just not announced.
+ */
+function emitMediaAdded(
+  dispatch: DispatchFn,
+  libraryId: string,
+  items: readonly MediaItem[],
+  log?: FastifyBaseLogger,
+): void {
+  if (items.length === 0) return;
+  if (items.length > MEDIA_ADDED_EMISSION_CAP) {
+    log?.info(
+      { libraryId, count: items.length, cap: MEDIA_ADDED_EMISSION_CAP },
+      'scan: too many new items; skipping media.added webhooks for this run',
+    );
+    return;
+  }
+  for (const item of items) {
+    void dispatch(
+      'media.added',
+      { itemId: item.id, libraryId, type: item.type, title: item.title },
+      { log },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -401,6 +450,7 @@ export async function scanLibrary(libraryId: string, opts: ScanOptions = {}): Pr
   const probe = opts.probe ?? ((absPath: string) => probeFile(absPath));
   const mediaRoots = opts.mediaRoots ?? fallbackMediaRoots();
   const concurrency = opts.concurrency ?? PROBE_CONCURRENCY;
+  const dispatch = opts.dispatch ?? dispatchEvent;
 
   const library = await prisma.library.findUnique({
     where: { id: libraryId },
@@ -529,6 +579,11 @@ export async function scanLibrary(libraryId: string, opts: ScanOptions = {}): Pr
     }
     progress();
   }
+
+  // Announce newly-created top-level items (movies/shows) via media.added
+  // webhooks. Fire-and-forget so a slow/broken subscriber never delays or
+  // fails the scan.
+  emitMediaAdded(dispatch, libraryId, resolver.newTopLevelItems, log);
 
   // Deletion pass: rows under the scanned roots that were not seen on disk.
   // Rows are kept (status "missing") so a returning disk restores cleanly;
