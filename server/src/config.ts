@@ -259,6 +259,25 @@ const envSchema = z
      * timeout on each. Default 5s; bounded at 100ms below and 60s above.
      */
     WEBHOOK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
+    /**
+     * Master switch for trickplay (BIF-style scrub-preview sprite) generation.
+     * When enabled (the default), sprites are generated on demand on the first
+     * trickplay request AND opportunistically pre-warmed during a manual scan.
+     * Defaults to disabled under NODE_ENV=test so the scan suite never spawns
+     * ffmpeg for previews (the trickplay tests enable it explicitly).
+     */
+    TRICKPLAY_ENABLED: z.stringbool().optional(),
+    /**
+     * Seconds between trickplay preview thumbnails (one frame every N seconds).
+     * A larger interval means fewer, coarser previews. Default 10s; bounded at
+     * one second below and one hour above.
+     */
+    TRICKPLAY_INTERVAL_SEC: z.coerce.number().int().min(1).max(3600).default(10),
+    /**
+     * Width in pixels of each trickplay preview thumbnail (height follows the
+     * source aspect ratio). Default 320; bounded at 64 and 640.
+     */
+    TRICKPLAY_THUMB_WIDTH: z.coerce.number().int().min(64).max(640).default(320),
   })
   .transform((env) => ({
     ...env,
@@ -266,6 +285,7 @@ const envSchema = z
     RATE_LIMIT_ENABLED: env.RATE_LIMIT_ENABLED ?? env.NODE_ENV !== 'test',
     WATCH_ENABLED: env.WATCH_ENABLED ?? env.NODE_ENV !== 'test',
     TASKS_ENABLED: env.TASKS_ENABLED ?? env.NODE_ENV !== 'test',
+    TRICKPLAY_ENABLED: env.TRICKPLAY_ENABLED ?? env.NODE_ENV !== 'test',
   }));
 
 export type Config = z.infer<typeof envSchema>;

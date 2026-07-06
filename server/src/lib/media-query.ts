@@ -1,4 +1,10 @@
-import { Prisma, type MediaFile, type MediaItem, type MediaStream } from '@prisma/client';
+import {
+  Prisma,
+  type Chapter,
+  type MediaFile,
+  type MediaItem,
+  type MediaStream,
+} from '@prisma/client';
 
 import { ITEM_NOT_FOUND_MESSAGE } from '../auth/access.js';
 import { getPrisma } from '../db/client.js';
@@ -107,6 +113,14 @@ export interface SerializedSubtitleStream {
   forced: boolean;
 }
 
+/** One chapter marker of a media file (for the player's chapter markers). */
+export interface SerializedChapter {
+  index: number;
+  startMs: number;
+  endMs: number;
+  title: string | null;
+}
+
 /** A playable file/version of a movie or episode (no filesystem path leaked). */
 export interface SerializedFile {
   id: string;
@@ -120,6 +134,8 @@ export interface SerializedFile {
   size: number;
   audioStreams: SerializedAudioStream[];
   subtitleStreams: SerializedSubtitleStream[];
+  /** Chapter markers in file order; empty when the file has none. */
+  chapters: SerializedChapter[];
 }
 
 /** Detail payload: the item plus the sub-collection relevant to its type. */
@@ -201,7 +217,9 @@ export function serializeItem(
   };
 }
 
-function serializeFile(file: MediaFile & { streams: MediaStream[] }): SerializedFile {
+function serializeFile(
+  file: MediaFile & { streams: MediaStream[]; chapters: Chapter[] },
+): SerializedFile {
   const byIndex = (a: MediaStream, b: MediaStream): number => a.streamIndex - b.streamIndex;
   const audioStreams = file.streams
     .filter((stream) => stream.type === 'audio')
@@ -224,6 +242,14 @@ function serializeFile(file: MediaFile & { streams: MediaStream[] }): Serialized
       title: stream.title,
       forced: stream.isForced,
     }));
+  const chapters = [...file.chapters]
+    .sort((a, b) => a.index - b.index)
+    .map((chapter) => ({
+      index: chapter.index,
+      startMs: chapter.startMs,
+      endMs: chapter.endMs,
+      title: chapter.title,
+    }));
   return {
     id: file.id,
     container: file.container,
@@ -236,6 +262,7 @@ function serializeFile(file: MediaFile & { streams: MediaStream[] }): Serialized
     size: Number(file.size),
     audioStreams,
     subtitleStreams,
+    chapters,
   };
 }
 
@@ -819,7 +846,7 @@ export async function getItemDetail(userId: string, itemId: string): Promise<Ite
     // as a play/version target — consistent with the episode-listing surface.
     const files = await prisma.mediaFile.findMany({
       where: { mediaItemId: full.id, status: 'available' },
-      include: { streams: true },
+      include: { streams: true, chapters: { orderBy: { index: 'asc' } } },
       orderBy: [{ addedAt: 'asc' }, { id: 'asc' }],
     });
     return { item, files: files.map(serializeFile), seasons: [], episodes: [] };

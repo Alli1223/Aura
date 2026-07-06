@@ -43,6 +43,7 @@ const fakeProbe: ProbeFn = async () => ({
       isAttachedPic: false,
     },
   ],
+  chapters: [],
 });
 
 function spyDispatch(): ReturnType<typeof vi.fn<DispatchFn>> {

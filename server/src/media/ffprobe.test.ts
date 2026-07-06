@@ -33,6 +33,7 @@ let tinyMp4: string;
 let multiMkv: string;
 let corruptMkv: string;
 let audioMp3: string;
+let chaptersMp4: string;
 
 async function assertToolAvailable(binary: string, envVar: string): Promise<void> {
   try {
@@ -59,6 +60,7 @@ beforeAll(async () => {
   multiMkv = path.join(fixtureDir, 'multi.mkv');
   corruptMkv = path.join(fixtureDir, 'corrupt.mkv');
   audioMp3 = path.join(fixtureDir, 'audio.mp3');
+  chaptersMp4 = path.join(fixtureDir, 'chapters.mp4');
   const srtPath = path.join(fixtureDir, 'subs.srt');
 
   // (1) Tiny mp4: 2s 320x240 h264 test pattern + stereo aac audio tagged eng.
@@ -109,6 +111,28 @@ beforeAll(async () => {
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
     '-c:a', 'libmp3lame',
     audioMp3,
+  ]);
+
+  // (5) mp4 with three chapters muxed from an FFMETADATA file (start/end in ms).
+  const chaptersMeta = path.join(fixtureDir, 'chapters.txt');
+  await writeFile(
+    chaptersMeta,
+    [
+      ';FFMETADATA1',
+      '[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=Intro',
+      '[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Middle',
+      '[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=3000\ntitle=End',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  // prettier-ignore
+  await ffmpeg([
+    '-f', 'lavfi', '-i', 'testsrc=duration=3:size=320x240:rate=10',
+    '-i', chaptersMeta,
+    '-map', '0:v:0', '-map_metadata', '1',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    chaptersMp4,
   ]);
 }, 120_000);
 
@@ -210,6 +234,22 @@ describe('probeFile', () => {
     });
   });
 
+  it('extracts chapter markers from a file that has them', async () => {
+    const probe = await probeFile(chaptersMp4);
+
+    expect(probe.chapters).toHaveLength(3);
+    expect(probe.chapters).toEqual([
+      { index: 0, startMs: 0, endMs: 1000, title: 'Intro' },
+      { index: 1, startMs: 1000, endMs: 2000, title: 'Middle' },
+      { index: 2, startMs: 2000, endMs: 3000, title: 'End' },
+    ]);
+  });
+
+  it('reports no chapters for a file without any', async () => {
+    const probe = await probeFile(tinyMp4);
+    expect(probe.chapters).toEqual([]);
+  });
+
   it('probes the audio-only mp3 fixture', async () => {
     const probe = await probeFile(audioMp3);
 
@@ -307,6 +347,7 @@ describe('isVideoFile', () => {
           isForced: false,
         },
       ],
+      chapters: [],
     };
 
     expect(isVideoFile(coverArtOnly)).toBe(false);

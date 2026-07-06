@@ -38,6 +38,7 @@ import { settingsRoutes } from './routes/settings.js';
 import { streamRoutes } from './routes/stream.js';
 import { subtitleRoutes } from './routes/subtitles.js';
 import { tasksRoutes } from './routes/tasks.js';
+import { trickplayRoutes } from './routes/trickplay.js';
 import { userRoutes } from './routes/users.js';
 import { watchRoutes } from './routes/watch.js';
 import { webhookRoutes } from './routes/webhooks.js';
@@ -303,6 +304,12 @@ export function buildApp(
   void app.register(qualityRoutes, { prefix: '/api/qualities' });
   // Subtitle listing + WebVTT serving, same prefix and token-auth as streamRoutes.
   void app.register(subtitleRoutes, {
+    prefix: '/api/stream',
+    config,
+    streamTokenSecret: secrets.streamTokenSecret,
+  });
+  // Trickplay (scrub-preview sprite) manifest + sheets, same prefix and token-auth.
+  void app.register(trickplayRoutes, {
     prefix: '/api/stream',
     config,
     streamTokenSecret: secrets.streamTokenSecret,
