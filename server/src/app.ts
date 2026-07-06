@@ -35,6 +35,7 @@ import { subtitleRoutes } from './routes/subtitles.js';
 import { tasksRoutes } from './routes/tasks.js';
 import { userRoutes } from './routes/users.js';
 import { watchRoutes } from './routes/watch.js';
+import { webhookRoutes } from './routes/webhooks.js';
 import { appVersion } from './version.js';
 
 export interface BuildAppOptions {
@@ -292,6 +293,8 @@ export function buildApp(
   void app.register(searchRoutes, { prefix: '/api' });
   // Admin scheduled-task status + manual trigger API.
   void app.register(tasksRoutes, { prefix: '/api/tasks' });
+  // Admin outbound-webhook management API.
+  void app.register(webhookRoutes, { prefix: '/api/webhooks' });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);

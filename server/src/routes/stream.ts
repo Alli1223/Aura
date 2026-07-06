@@ -13,6 +13,7 @@ import { ApiError, notFoundError, sendError } from '../lib/errors.js';
 import { isPathWithin, resolveMediaFileForServing } from '../lib/media-roots.js';
 import { getSetting } from '../lib/settings.js';
 import { parseBody } from '../lib/validation.js';
+import { dispatchEvent } from '../lib/webhooks.js';
 import {
   computeEtag,
   contentDispositionInline,
@@ -164,6 +165,20 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
       client: capabilities,
       maxQuality,
     });
+
+    // Announce the playback start (fire-and-forget). The decide call is the one
+    // pre-playback request the player makes for BOTH direct play and transcode,
+    // so it is the natural single emission point; `mode` reflects the decision.
+    void dispatchEvent(
+      'playback.started',
+      {
+        userId: request.user.id,
+        mediaFileId: file.id,
+        itemId: file.mediaItemId,
+        mode: decision.action,
+      },
+      { log: request.log },
+    );
 
     // One freshly minted stream token, scoped to this user + file, embedded in
     // whichever URL the player will actually hit next.
