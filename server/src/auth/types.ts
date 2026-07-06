@@ -27,6 +27,12 @@ export interface AuthUser {
    * see/stream (a RATING_LADDER name), or null for "no cap" (unrestricted).
    */
   maxContentRating: string | null;
+  /** Preferred playback quality (a ladder rung name), or null for none. */
+  preferredQuality: string | null;
+  /** Preferred subtitle language (ISO code or "off"), or null for none. */
+  preferredSubtitleLanguage: string | null;
+  /** Whether the player auto-advances to the next episode. */
+  autoplayNextEpisode: boolean;
   createdAt: Date;
   lastLoginAt: Date | null;
 }
@@ -55,6 +61,9 @@ export function toAuthUser(user: User): AuthUser {
     mustChangePassword: user.mustChangePassword,
     maxQuality: user.maxQuality,
     maxContentRating: user.maxContentRating,
+    preferredQuality: user.preferredQuality,
+    preferredSubtitleLanguage: user.preferredSubtitleLanguage,
+    autoplayNextEpisode: user.autoplayNextEpisode,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
   };

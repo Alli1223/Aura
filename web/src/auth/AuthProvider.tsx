@@ -8,7 +8,7 @@ import {
   type AuthBridge,
 } from '../api/client';
 import * as api from '../api/endpoints';
-import type { AuthSession, AuthUser } from '../api/types';
+import type { AuthSession, AuthUser, PlaybackPreferencesInput } from '../api/types';
 import { AuthContext, type AuthContextValue, type AuthStatus } from './context';
 
 /**
@@ -103,6 +103,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser((current) => (current === null ? current : { ...current, mustChangePassword: false }));
   }, []);
 
+  const updatePreferences = useCallback(async (input: PlaybackPreferencesInput) => {
+    // The server returns the full updated user; sync it so consumers (e.g. the
+    // player's default quality / subtitle / autoplay) see the new preferences.
+    const updated = await api.updatePreferences(input);
+    setUser(updated);
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
@@ -114,9 +121,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       logout,
       changePassword,
+      updatePreferences,
       retryBoot: () => void runBoot(),
     }),
-    [status, user, login, register, logout, changePassword, runBoot],
+    [status, user, login, register, logout, changePassword, updatePreferences, runBoot],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

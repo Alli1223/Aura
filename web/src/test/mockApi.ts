@@ -16,6 +16,9 @@ import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/type
 /** Fixed token the mock server hands back so tests can assert bearer headers. */
 export const MOCK_ACCESS_TOKEN = 'access-token';
 
+/** Quality-ladder rung names, mirrored so the PATCH /me mock can reject bad ones. */
+const QUALITY_LADDER_NAMES = ['1080p', '720p', '480p', '360p'] as const;
+
 export function makeUser(overrides: Partial<AuthUser> = {}): AuthUser {
   return {
     id: 'user-1',
@@ -24,6 +27,9 @@ export function makeUser(overrides: Partial<AuthUser> = {}): AuthUser {
     role: 'user',
     isEnabled: true,
     mustChangePassword: false,
+    preferredQuality: null,
+    preferredSubtitleLanguage: null,
+    autoplayNextEpisode: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     lastLoginAt: null,
     ...overrides,
@@ -757,6 +763,39 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
         state.session = { ...state.session, mustChangePassword: false };
       }
       return { status: 204 };
+    }
+
+    // Self-service profile / preferences update. Mirrors the server's partial
+    // PATCH: only provided fields change, `null` clears a nullable field, and
+    // an invalid quality is a 400. Kept BEFORE the admin /users/:id match so
+    // the static /me segment wins (as it does server-side).
+    if (path === '/api/users/me' && method === 'PATCH') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      if (state.session === null) {
+        return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      }
+      if (
+        'preferredQuality' in body &&
+        body.preferredQuality !== null &&
+        !(QUALITY_LADDER_NAMES as readonly unknown[]).includes(body.preferredQuality)
+      ) {
+        return { status: 400, body: err('VALIDATION', 'Invalid preferredQuality') };
+      }
+      const updated = { ...state.session };
+      if ('email' in body) updated.email = (body.email as string | null) ?? null;
+      if ('preferredQuality' in body) {
+        updated.preferredQuality = (body.preferredQuality as string | null) ?? null;
+      }
+      if ('preferredSubtitleLanguage' in body) {
+        updated.preferredSubtitleLanguage =
+          (body.preferredSubtitleLanguage as string | null) ?? null;
+      }
+      if ('autoplayNextEpisode' in body) {
+        updated.autoplayNextEpisode = Boolean(body.autoplayNextEpisode);
+      }
+      state.session = updated;
+      state.authUser = updated;
+      return { status: 200, body: { user: updated } };
     }
 
     // ---- Admin: users ------------------------------------------------------

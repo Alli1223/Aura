@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 
 import type { LoginInput, RegisterInput, ChangePasswordInput } from '../api/endpoints';
-import type { AuthUser } from '../api/types';
+import type { AuthUser, PlaybackPreferencesInput } from '../api/types';
 
 /**
  * Boot restores the session by refreshing:
@@ -24,6 +24,8 @@ export interface AuthContextValue {
   register(input: RegisterInput): Promise<void>;
   logout(): Promise<void>;
   changePassword(input: ChangePasswordInput): Promise<void>;
+  /** Update the current user's playback preferences and sync the cached user. */
+  updatePreferences(input: PlaybackPreferencesInput): Promise<void>;
   /** Re-attempt the boot refresh after an `error` status. */
   retryBoot(): void;
 }

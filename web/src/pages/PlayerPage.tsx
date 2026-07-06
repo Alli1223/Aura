@@ -36,6 +36,7 @@ import {
 import { formatTime } from '../components/player/format';
 import { PlayGlyph, ReplayGlyph } from '../components/player/PlayerIcons';
 import { Spinner } from '../components/Spinner';
+import { useAuth } from '../auth/context';
 import styles from './PlayerPage.module.css';
 
 // The hls.js player page, reached at `/player/:mediaFileId?item=:itemId`.
@@ -72,6 +73,41 @@ interface PlayDescriptor {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+/** All ladder rung names, highest first — mirrors the server quality ladder. */
+const ALL_QUALITY_NAMES = ['1080p', '720p', '480p', '360p'] as const;
+
+/**
+ * Resolves a user's preferred quality against the rungs they may actually
+ * select. `permitted` is the cap-and-below list from GET /api/qualities (highest
+ * first). A preference at or below the cap is honoured; one above the cap clamps
+ * down to the cap; an unset/unknown preference falls back to `fallback`.
+ */
+function clampToPermitted(
+  preferred: string | null | undefined,
+  permitted: string[],
+  fallback: string,
+): string {
+  if (preferred === null || preferred === undefined || preferred === '') return fallback;
+  if (permitted.includes(preferred)) return preferred;
+  // A real rung that isn't permitted must be above the cap → clamp to the cap.
+  if ((ALL_QUALITY_NAMES as readonly string[]).includes(preferred) && permitted.length > 0) {
+    return permitted[0] as string;
+  }
+  return fallback;
+}
+
+/**
+ * Whether a subtitle track's language satisfies a preference. Matches on an
+ * exact (case-insensitive) code or a shared 2-letter prefix so a 2-letter
+ * preference ("en") still selects a 3-letter track ("eng").
+ */
+function languageMatches(trackLanguage: string | null | undefined, preference: string): boolean {
+  if (trackLanguage === null || trackLanguage === undefined || trackLanguage === '') return false;
+  const track = trackLanguage.toLowerCase();
+  const pref = preference.toLowerCase();
+  return track === pref || track.slice(0, 2) === pref.slice(0, 2);
 }
 
 /** Reads an optional next-episode queue off the router location state. */
@@ -390,8 +426,11 @@ function usePlaybackEngine(params: EngineParams): PlaybackEngine {
     if (current.action === 'direct') {
       startDirect(startAtRef.current);
     } else {
+      // `defaultQuality` is the user's preferred rung (clamped to their cap),
+      // falling back to the server-chosen decision rung — so playback starts at
+      // the preference rather than the bandwidth heuristic's pick.
       void startTranscode({
-        quality: current.quality,
+        quality: defaultQualityRef.current,
         audioTrack: undefined,
         startOffset: startAtRef.current,
       });
@@ -732,11 +771,14 @@ function ResumePrompt({
 
 function EndedOverlay({
   next,
+  autoAdvance,
   onReplay,
   onPlayNext,
   onBack,
 }: {
   next: PlayDescriptor | null;
+  /** When false, "Up next" is offered but never auto-starts (user preference). */
+  autoAdvance: boolean;
   onReplay: () => void;
   onPlayNext: () => void;
   onBack: () => void;
@@ -744,14 +786,14 @@ function EndedOverlay({
   const [countdown, setCountdown] = useState(NEXT_EPISODE_COUNTDOWN_S);
 
   useEffect(() => {
-    if (next === null) return;
+    if (next === null || !autoAdvance) return;
     if (countdown <= 0) {
       onPlayNext();
       return;
     }
     const timer = window.setTimeout(() => setCountdown((value) => value - 1), 1000);
     return () => window.clearTimeout(timer);
-  }, [countdown, next, onPlayNext]);
+  }, [countdown, next, autoAdvance, onPlayNext]);
 
   return (
     <CenteredOverlay>
@@ -760,7 +802,7 @@ function EndedOverlay({
           <>
             <h2 className={styles.overlayTitle}>Up next</h2>
             <p className={styles.overlayText}>
-              {next.title} — starting in {countdown}s
+              {autoAdvance ? `${next.title} — starting in ${countdown}s` : next.title}
             </p>
             <div className={styles.overlayActions}>
               <button type="button" className="btn btn-primary" onClick={onPlayNext}>
@@ -800,6 +842,10 @@ interface StageProps {
   resumePositionSec: number;
   defaultQuality: string;
   qualityRungs: string[];
+  /** The user's preferred subtitle language (ISO code / "off"), or null. */
+  preferredSubtitleLanguage: string | null;
+  /** Whether the next episode auto-advances when playback ends. */
+  autoplayNextEpisode: boolean;
   nextQueue: PlayDescriptor[];
   onBack: () => void;
 }
@@ -815,7 +861,9 @@ function PlayerStage(props: StageProps) {
   const [startAtSec, setStartAtSec] = useState(0);
   const [interactionVisible, setInteractionVisible] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
-  const [activeSubtitleId, setActiveSubtitleId] = useState<string | null>(null);
+  // `undefined` == the user hasn't chosen yet, so the preferred-language
+  // preselection applies; `null` == explicitly off; a string == a chosen track.
+  const [subtitleChoice, setSubtitleChoice] = useState<string | null | undefined>(undefined);
 
   const engine = usePlaybackEngine({
     videoRef,
@@ -850,6 +898,20 @@ function PlayerStage(props: StageProps) {
     [subtitleTracks],
   );
 
+  // The track pre-selected by the user's preferred language (derived, not an
+  // effect): the first text track whose language matches. Null when the
+  // preference is unset or "off"/"none" (never auto-enable) or nothing matches.
+  const preselectedSubtitleId = useMemo(() => {
+    const pref = props.preferredSubtitleLanguage;
+    if (pref === null || pref === '' || pref === 'off' || pref === 'none') return null;
+    return textSubtitles.find((track) => languageMatches(track.language, pref))?.id ?? null;
+  }, [textSubtitles, props.preferredSubtitleLanguage]);
+
+  // The active subtitle: the user's explicit choice once made, otherwise the
+  // preferred-language preselection. Keeps the preselection from clobbering a
+  // later manual on/off without any setState-in-effect.
+  const activeSubtitleId = subtitleChoice !== undefined ? subtitleChoice : preselectedSubtitleId;
+
   // Reflect the chosen subtitle onto the <track> elements' modes.
   useEffect(() => {
     const video = videoRef.current;
@@ -880,11 +942,12 @@ function PlayerStage(props: StageProps) {
   const controlsShown = interactionVisible || !engine.playing;
 
   const toggleSubtitles = useCallback(() => {
-    setActiveSubtitleId((current) => {
-      if (current !== null) return null;
+    setSubtitleChoice((current) => {
+      const active = current !== undefined ? current : preselectedSubtitleId;
+      if (active !== null) return null;
       return textSubtitles[0]?.id ?? null;
     });
-  }, [textSubtitles]);
+  }, [textSubtitles, preselectedSubtitleId]);
 
   const toggleFullscreen = useCallback(() => {
     const container = containerRef.current;
@@ -1044,6 +1107,7 @@ function PlayerStage(props: StageProps) {
       ) : engine.ended ? (
         <EndedOverlay
           next={next}
+          autoAdvance={props.autoplayNextEpisode}
           onReplay={engine.retry}
           onPlayNext={goToNext}
           onBack={props.onBack}
@@ -1074,7 +1138,7 @@ function PlayerStage(props: StageProps) {
         onSelectAudio={(value) => engine.selectAudio(Number(value))}
         subtitleOptions={subtitleOptions}
         activeSubtitleId={activeSubtitleId}
-        onSelectSubtitle={setActiveSubtitleId}
+        onSelectSubtitle={(value) => setSubtitleChoice(value)}
         onActivity={showControls}
       />
     </div>
@@ -1086,6 +1150,7 @@ function PlayerStage(props: StageProps) {
 function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: string | null }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuth();
   const capabilities = useMemo(() => detectClientCapabilities(), []);
   const decisionQuery = usePlaybackDecision(mediaFileId, capabilities);
   const detailQuery = useItemDetail(itemId ?? '', { enabled: itemId !== null });
@@ -1141,7 +1206,11 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
       : 0;
   const title = detail?.item.title ?? 'Now playing';
   const qualityRungs = qualitiesQuery.data?.qualities.map((rung) => rung.name) ?? [];
-  const defaultQuality = qualitiesQuery.data?.defaultQuality ?? '720p';
+  const serverDefaultQuality = qualitiesQuery.data?.defaultQuality ?? '720p';
+  // Start at the user's preferred rung (clamped to the rungs they may select),
+  // falling back to the server-chosen decision rung / server default.
+  const decisionFallback = decision.action === 'transcode' ? decision.quality : serverDefaultQuality;
+  const initialQuality = clampToPermitted(user?.preferredQuality, qualityRungs, decisionFallback);
 
   return (
     <div className={styles.page}>
@@ -1152,8 +1221,10 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
         decision={decision}
         sourceDurationSec={sourceDurationSec}
         resumePositionSec={resumePositionSec}
-        defaultQuality={defaultQuality}
+        defaultQuality={initialQuality}
         qualityRungs={qualityRungs}
+        preferredSubtitleLanguage={user?.preferredSubtitleLanguage ?? null}
+        autoplayNextEpisode={user?.autoplayNextEpisode ?? true}
         nextQueue={nextQueue}
         onBack={onBack}
       />

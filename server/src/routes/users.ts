@@ -10,6 +10,7 @@ import { userRoleSchema } from '../db/constants.js';
 import { writeAuditLog } from '../lib/audit.js';
 import { ratingCapSchema } from '../lib/content-rating.js';
 import { ApiError, notFoundError, sendError } from '../lib/errors.js';
+import { playbackPreferencesSchema } from '../lib/preferences.js';
 import { parseBody, parseParams } from '../lib/validation.js';
 import { qualityNameSchema } from '../streaming/quality-ladder.js';
 
@@ -57,7 +58,24 @@ const adminUpdateUserSchema = z
 
 const adminSetPasswordSchema = z.object({ newPassword: passwordSchema });
 
-const updateProfileSchema = z.object({ email: emailSchema.nullable() });
+// Self-service profile update: the email plus the playback preferences, each
+// optional so a client can PATCH any subset. `null` clears a nullable field;
+// at least one field must be present. Preference values are validated by
+// playbackPreferencesSchema (quality against the ladder, language a short code
+// or "off", autoplay a boolean).
+const updateProfileSchema = playbackPreferencesSchema
+  .extend({ email: emailSchema.nullable().optional() })
+  .refine(
+    (body) =>
+      body.email !== undefined ||
+      body.preferredQuality !== undefined ||
+      body.preferredSubtitleLanguage !== undefined ||
+      body.autoplayNextEpisode !== undefined,
+    {
+      message:
+        'At least one of email, preferredQuality, preferredSubtitleLanguage or autoplayNextEpisode must be provided',
+    },
+  );
 
 const changeOwnPasswordSchema = z.object({
   currentPassword: z.string('Current password is required').min(1, 'Current password is required'),
@@ -133,7 +151,18 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     try {
       updated = await prisma.user.update({
         where: { id: request.user.id },
-        data: { email: body.email },
+        data: {
+          ...(body.email !== undefined ? { email: body.email } : {}),
+          ...(body.preferredQuality !== undefined
+            ? { preferredQuality: body.preferredQuality }
+            : {}),
+          ...(body.preferredSubtitleLanguage !== undefined
+            ? { preferredSubtitleLanguage: body.preferredSubtitleLanguage }
+            : {}),
+          ...(body.autoplayNextEpisode !== undefined
+            ? { autoplayNextEpisode: body.autoplayNextEpisode }
+            : {}),
+        },
       });
     } catch (err) {
       if (isEmailUniqueViolation(err)) {
@@ -142,7 +171,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       throw err;
     }
 
-    if (updated.email !== request.user.email) {
+    if (body.email !== undefined && updated.email !== request.user.email) {
       await writeAuditLog(
         prisma,
         {
