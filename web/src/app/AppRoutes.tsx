@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router';
 
 import { AppShell } from '../components/AppShell';
 import { FullPageLoader } from '../components/Spinner';
+import { HistoryPage } from '../pages/HistoryPage';
 import { HomePage } from '../pages/HomePage';
 import { ItemDetailPage } from '../pages/ItemDetailPage';
 import { LibraryPage } from '../pages/LibraryPage';
@@ -16,6 +17,7 @@ import { AdminAccessPage } from '../pages/admin/AdminAccessPage';
 import { AdminLayout } from '../pages/admin/AdminLayout';
 import { AdminLibrariesPage } from '../pages/admin/AdminLibrariesPage';
 import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage';
+import { AdminStatsPage } from '../pages/admin/AdminStatsPage';
 import { AdminTasksPage } from '../pages/admin/AdminTasksPage';
 import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { BootGate } from '../routes/BootGate';
@@ -54,6 +56,7 @@ export function AppRoutes() {
             <Route index element={<HomePage />} />
             <Route path="library/:id" element={<LibraryPage />} />
             <Route path="items/:id" element={<ItemDetailPage />} />
+            <Route path="history" element={<HistoryPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route element={<RequireAdmin />}>
@@ -64,6 +67,7 @@ export function AppRoutes() {
                 <Route path="settings" element={<AdminSettingsPage />} />
                 <Route path="tasks" element={<AdminTasksPage />} />
                 <Route path="activity" element={<ActivitySection />} />
+                <Route path="stats" element={<AdminStatsPage />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundPage />} />

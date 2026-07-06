@@ -230,6 +230,17 @@ export async function setWatched(
   return getState(userId, mediaItemId);
 }
 
+/**
+ * Removes this user's watch state for one item ("remove from history"). Uses
+ * deleteMany so it is idempotent — clearing an item with no stored row is a
+ * no-op, never an error. Callers gate access (assertMediaItemAccess) first, so
+ * this never leaks whether the item exists. Returns whether a row was deleted.
+ */
+export async function clearWatchState(userId: string, mediaItemId: string): Promise<boolean> {
+  const result = await getPrisma().watchState.deleteMany({ where: { userId, mediaItemId } });
+  return result.count > 0;
+}
+
 /** This user's raw state for one item (a zeroed view when no row exists). */
 export async function getState(userId: string, mediaItemId: string): Promise<WatchStateView> {
   const state = await getPrisma().watchState.findUnique({

@@ -2,7 +2,9 @@ import { vi, type Mock } from 'vitest';
 
 import type { ActivitySession } from '../api/activity';
 import type { AccessMatrix, AdminSettings, AdminUser, ScanState, TaskStatus } from '../api/admin';
+import type { AdminStats } from '../api/adminStats';
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
+import type { HistoryEntry } from '../api/history';
 import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
 import type {
@@ -193,6 +195,45 @@ export function makeContinueEntry(
   };
 }
 
+/** A watch-history entry (serialized item + its watch state + show context). */
+export function makeHistoryEntry(
+  overrides: Partial<Omit<HistoryEntry, 'item' | 'watchState'>> & {
+    item?: Partial<MediaItem>;
+    watchState?: Partial<HistoryEntry['watchState']>;
+  } = {},
+): HistoryEntry {
+  const item = makeItem(overrides.item ?? {});
+  return {
+    item,
+    watchState: {
+      positionMs: 0,
+      watched: true,
+      watchedAt: '2026-02-01T00:00:00.000Z',
+      playCount: 1,
+      lastActivity: item.addedAt,
+      ...overrides.watchState,
+    },
+    showId: overrides.showId ?? null,
+    showTitle: overrides.showTitle ?? null,
+  };
+}
+
+/** A server-wide admin-stats payload with empty/zeroed defaults. */
+export function makeAdminStats(overrides: Partial<AdminStats> = {}): AdminStats {
+  return {
+    totals: overrides.totals ?? {
+      users: 0,
+      libraries: 0,
+      files: 0,
+      items: { movie: 0, show: 0, season: 0, episode: 0, total: 0 },
+    },
+    storageByLibrary: overrides.storageByLibrary ?? [],
+    mostWatched: overrides.mostWatched ?? [],
+    mostActiveUsers: overrides.mostActiveUsers ?? [],
+    recentlyAdded: overrides.recentlyAdded ?? { last24h: 0, last7d: 0, last30d: 0 },
+  };
+}
+
 let fileCounter = 0;
 /** A serialized media file (with streams) carrying sensible defaults. */
 export function makeFile(overrides: Partial<MediaFileInfo> = {}): MediaFileInfo {
@@ -322,6 +363,10 @@ export interface MockApiConfig {
   items?: Record<string, MediaItem[]>;
   /** In-progress entries served by GET /continue-watching. */
   continueWatching?: ContinueWatchingEntry[];
+  /** Watch-history entries served (paginated) by GET /history. */
+  history?: HistoryEntry[];
+  /** Server-wide stats served by GET /admin/stats. */
+  adminStats?: AdminStats;
   /** Item detail payloads keyed by item id, served by GET /items/:id. */
   details?: Record<string, ItemDetail>;
   /** Current password accepted by login / change-password. */
@@ -363,6 +408,8 @@ export interface MockApi {
     libraries: Library[];
     items: Record<string, MediaItem[]>;
     continueWatching: ContinueWatchingEntry[];
+    history: HistoryEntry[];
+    adminStats: AdminStats;
     details: Record<string, ItemDetail>;
     password: string;
     authUser: AuthUser | null;
@@ -563,6 +610,8 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     libraries: config.libraries ?? [],
     items: config.items ?? {},
     continueWatching: config.continueWatching ?? [],
+    history: config.history ?? [],
+    adminStats: config.adminStats ?? makeAdminStats(),
     details: config.details ?? {},
     password: config.password ?? 'current-pass-123',
     authUser: config.authUser ?? config.session ?? null,
@@ -653,6 +702,34 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
       const limit = Number(new URL(url, 'http://localhost').searchParams.get('limit') ?? '20');
       return { status: 200, body: { items: state.continueWatching.slice(0, limit) } };
+    }
+
+    // ---- Watch history -----------------------------------------------------
+    if (path === '/api/history' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const query = new URL(url, 'http://localhost').searchParams;
+      const limit = Number(query.get('limit') ?? '24');
+      const page = Number(query.get('page') ?? '1');
+      const total = state.history.length;
+      const start = (page - 1) * limit;
+      return {
+        status: 200,
+        body: { items: state.history.slice(start, start + limit), page, pageSize: limit, total },
+      };
+    }
+
+    const historyDeleteMatch = /^\/api\/history\/([^/]+)$/.exec(path);
+    if (historyDeleteMatch !== null && method === 'DELETE') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const itemId = decodeURIComponent(historyDeleteMatch[1] ?? '');
+      state.history = state.history.filter((entry) => entry.item.id !== itemId);
+      return { status: 204 };
+    }
+
+    // ---- Admin: server-wide stats ------------------------------------------
+    if (path === '/api/admin/stats' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: state.adminStats };
     }
 
     if (path === '/api/home/recently-added' && method === 'GET') {
