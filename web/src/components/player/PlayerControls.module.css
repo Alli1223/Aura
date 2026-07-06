@@ -1,0 +1,287 @@
+.controls {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  /* A top + bottom scrim keeps white glyphs legible over any frame. */
+  background:
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0) 22%),
+    linear-gradient(to top, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0) 30%);
+}
+
+.visible {
+  opacity: 1;
+}
+
+.hidden {
+  opacity: 0;
+}
+
+/* Interactive children opt back into pointer events. */
+.topBar,
+.bottomBar {
+  pointer-events: auto;
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}
+
+.title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottomBar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  color: #fff;
+}
+
+.scrubRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.time {
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.85);
+  min-width: 3.5rem;
+  text-align: center;
+}
+
+.scrubWrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  height: 20px;
+}
+
+/* Buffered fill sits under the range track. */
+.scrubBuffered {
+  position: absolute;
+  left: 0;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+
+.scrub,
+.volume {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.22);
+  outline: none;
+  cursor: pointer;
+}
+
+.scrub {
+  position: relative;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0%,
+    var(--color-accent) var(--fill, 0%),
+    transparent var(--fill, 0%)
+  );
+}
+
+.scrub::-webkit-slider-thumb,
+.volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.scrub::-moz-range-thumb,
+.volume::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.buttonRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: #fff;
+  transition: background 0.15s ease;
+}
+
+.iconButton:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.iconActive {
+  color: var(--color-accent);
+}
+
+.volumeGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.volume {
+  width: 90px;
+}
+
+/* ---- Settings menu ------------------------------------------------------- */
+
+.settings {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-2));
+  min-width: 240px;
+  max-width: min(320px, 80vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: rgba(20, 24, 33, 0.97);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-text);
+}
+
+.menuList,
+.optionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.menuRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.menuRow:hover:not(:disabled) {
+  background: var(--color-surface-3);
+}
+
+.menuRow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.menuValue {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.panelBack {
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  margin-bottom: var(--space-1);
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-align: left;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.option:hover {
+  background: var(--color-surface-3);
+}
+
+.optionActive {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.optionDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.optionCheck {
+  width: 1rem;
+  flex: none;
+  text-align: center;
+}
+
+.optionLabel {
+  flex: 1;
+}
+
+.optionHint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+}

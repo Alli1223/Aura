@@ -29,6 +29,29 @@ function playerHref(mediaFileId: string, itemId: string): string {
   return `/player/${encodeURIComponent(mediaFileId)}?item=${encodeURIComponent(itemId)}`;
 }
 
+/** A playable episode descriptor the player autoplays next, in season order. */
+interface PlayDescriptor {
+  mediaFileId: string;
+  itemId: string;
+  title: string;
+}
+
+/** The descriptor for a playable episode, or null when it has no file. */
+function episodeDescriptor(episode: DetailEpisode | undefined): PlayDescriptor | null {
+  if (episode === undefined || !episode.hasFile || episode.primaryMediaFileId === null) return null;
+  return { mediaFileId: episode.primaryMediaFileId, itemId: episode.id, title: episode.title };
+}
+
+/** The queue of playable episodes AFTER `fromIndex`, for next-episode autoplay. */
+function nextEpisodeQueue(episodes: DetailEpisode[], fromIndex: number): PlayDescriptor[] {
+  const queue: PlayDescriptor[] = [];
+  for (let i = fromIndex + 1; i < episodes.length; i += 1) {
+    const descriptor = episodeDescriptor(episodes[i]);
+    if (descriptor !== null) queue.push(descriptor);
+  }
+  return queue;
+}
+
 // ---- Formatting helpers -----------------------------------------------------
 
 function formatRuntime(ms: number | null): string | null {
@@ -422,7 +445,13 @@ function ShowDetail({ detail }: { detail: ItemDetail }) {
 // ---- Season detail ----------------------------------------------------------
 
 /** One episode row: thumbnail, title/overview, play target and watched toggle. */
-function EpisodeRow({ episode }: { episode: DetailEpisode }) {
+function EpisodeRow({
+  episode,
+  nextQueue,
+}: {
+  episode: DetailEpisode;
+  nextQueue: PlayDescriptor[];
+}) {
   const thumb = artworkSrc(episode.posterUrl ?? episode.backdropUrl, 'w400');
   const { watched, positionMs } = episode.watchState;
   const percent =
@@ -478,6 +507,7 @@ function EpisodeRow({ episode }: { episode: DetailEpisode }) {
           {episode.hasFile && episode.primaryMediaFileId !== null ? (
             <Link
               to={playerHref(episode.primaryMediaFileId, episode.id)}
+              state={{ queue: nextQueue }}
               className={`btn btn-primary ${styles.iconButton}`}
             >
               <PlayIcon />
@@ -553,8 +583,12 @@ function SeasonDetail({ detail }: { detail: ItemDetail }) {
           <p className={styles.overview}>No episodes have been added to this season yet.</p>
         ) : (
           <ul className={styles.episodeList}>
-            {episodes.map((episode) => (
-              <EpisodeRow key={episode.id} episode={episode} />
+            {episodes.map((episode, index) => (
+              <EpisodeRow
+                key={episode.id}
+                episode={episode}
+                nextQueue={nextEpisodeQueue(episodes, index)}
+              />
             ))}
           </ul>
         )}

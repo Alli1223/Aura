@@ -10,6 +10,12 @@ import type {
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { ContinueWatchingEntry } from '../api/home';
 import type { MediaItem } from '../api/media';
+import type {
+  PlaybackDecision,
+  PlayerAudioTrack,
+  PlayerSubtitleTrack,
+  QualitiesResponse,
+} from '../api/player';
 import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/types';
 
 /** Fixed token the mock server hands back so tests can assert bearer headers. */
@@ -204,6 +210,85 @@ export function makeDetail(
   };
 }
 
+/** The fixed streaming token the mock decide endpoint mints. */
+export const MOCK_STREAM_TOKEN = 'stream-token';
+
+/** A direct-play decision (mirrors the server's /stream/decide direct shape). */
+export function makeDirectDecision(mediaFileId: string): PlaybackDecision {
+  return {
+    action: 'direct',
+    reasons: ['within client capabilities'],
+    streamToken: MOCK_STREAM_TOKEN,
+    expiresAt: '2026-01-01T01:00:00.000Z',
+    url: `/api/stream/direct/${mediaFileId}?token=${MOCK_STREAM_TOKEN}`,
+  };
+}
+
+/** A transcode decision (mirrors the server's /stream/decide transcode shape). */
+export function makeTranscodeDecision(
+  mediaFileId: string,
+  quality = '720p',
+): PlaybackDecision {
+  return {
+    action: 'transcode',
+    reasons: ['video codec not supported by the client'],
+    transcodeReason: 'video-codec',
+    transcodeReasons: ['video-codec'],
+    quality,
+    streamToken: MOCK_STREAM_TOKEN,
+    expiresAt: '2026-01-01T01:00:00.000Z',
+    hlsStartUrl: `/api/stream/hls/${mediaFileId}?token=${MOCK_STREAM_TOKEN}&quality=${quality}`,
+  };
+}
+
+/** The GET /api/qualities payload, defaulting to the full ladder. */
+export function makeQualities(overrides: Partial<QualitiesResponse> = {}): QualitiesResponse {
+  return {
+    maxQuality: overrides.maxQuality ?? '1080p',
+    defaultQuality: overrides.defaultQuality ?? '720p',
+    qualities: overrides.qualities ?? [
+      { name: '1080p', maxWidth: 1920, videoBitrate: '6000k', audioBitrate: '192k' },
+      { name: '720p', maxWidth: 1280, videoBitrate: '3000k', audioBitrate: '160k' },
+      { name: '480p', maxWidth: 854, videoBitrate: '1400k', audioBitrate: '128k' },
+      { name: '360p', maxWidth: 640, videoBitrate: '800k', audioBitrate: '96k' },
+    ],
+  };
+}
+
+/** One audio track for GET /stream/audio. */
+export function makeAudioTrack(overrides: Partial<PlayerAudioTrack> = {}): PlayerAudioTrack {
+  const index = overrides.index ?? 0;
+  return {
+    index,
+    codec: overrides.codec ?? 'aac',
+    channels: overrides.channels ?? 2,
+    channelLayout: overrides.channelLayout ?? 'Stereo',
+    language: overrides.language ?? 'eng',
+    title: overrides.title,
+    default: overrides.default ?? index === 0,
+    label: overrides.label ?? `English Stereo (AAC)`,
+  };
+}
+
+/** One subtitle track for GET /stream/subtitles. */
+export function makeSubtitleTrack(
+  overrides: Partial<PlayerSubtitleTrack> = {},
+): PlayerSubtitleTrack {
+  const kind = overrides.kind ?? 'text';
+  return {
+    id: overrides.id ?? 'embedded-2',
+    source: overrides.source ?? 'embedded',
+    kind,
+    format: overrides.format ?? (kind === 'image' ? 'pgs' : 'srt'),
+    codec: overrides.codec,
+    language: overrides.language ?? 'eng',
+    title: overrides.title,
+    forced: overrides.forced ?? false,
+    default: overrides.default ?? false,
+    label: overrides.label ?? 'English',
+  };
+}
+
 export interface MockApiConfig {
   serverName?: string;
   registrationEnabled?: boolean;
@@ -232,6 +317,14 @@ export interface MockApiConfig {
   scans?: Record<string, ScanState>;
   /** POST /tasks/:id/run returns 409 TASK_RUNNING for this task id. */
   taskRunConflictId?: string;
+  /** Playback decisions keyed by mediaFileId (default: direct play). */
+  decisions?: Record<string, PlaybackDecision>;
+  /** GET /api/qualities payload (default: full ladder). */
+  qualities?: QualitiesResponse;
+  /** Audio tracks keyed by mediaFileId (GET /stream/audio). */
+  audioTracks?: Record<string, PlayerAudioTrack[]>;
+  /** Subtitle tracks keyed by mediaFileId (GET /stream/subtitles). */
+  subtitles?: Record<string, PlayerSubtitleTrack[]>;
 }
 
 export interface MockApi {
@@ -251,6 +344,12 @@ export interface MockApi {
     settings: AdminSettings;
     tasks: TaskStatus[];
     scans: Record<string, ScanState>;
+    decisions: Record<string, PlaybackDecision>;
+    qualities: QualitiesResponse;
+    audioTracks: Record<string, PlayerAudioTrack[]>;
+    subtitles: Record<string, PlayerSubtitleTrack[]>;
+    /** Monotonic counter so each HLS start returns a distinct session id. */
+    hlsSessionCounter: number;
   };
 }
 
@@ -441,6 +540,11 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     settings: { ...DEFAULT_ADMIN_SETTINGS, ...config.settings },
     tasks: config.tasks ?? [],
     scans: config.scans ?? {},
+    decisions: config.decisions ?? {},
+    qualities: config.qualities ?? makeQualities(),
+    audioTracks: config.audioTracks ?? {},
+    subtitles: config.subtitles ?? {},
+    hlsSessionCounter: 0,
   };
   const conflictTaskId = config.taskRunConflictId;
 
@@ -855,6 +959,62 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
         return { status: 409, body: err('TASK_RUNNING', 'Task is already running') };
       }
       return { status: 202, body: { started: true, taskId } };
+    }
+
+    // ---- Playback / streaming -----------------------------------------------
+
+    // GET /api/qualities — the current user's selectable rungs (JWT-authed).
+    if (path === '/api/qualities' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: state.qualities };
+    }
+
+    // POST /api/stream/decide/:mediaFileId — direct-vs-transcode (JWT-authed).
+    const decideMatch = /^\/api\/stream\/decide\/([^/]+)$/.exec(path);
+    if (decideMatch !== null && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const mediaFileId = decodeURIComponent(decideMatch[1] ?? '');
+      const decision = state.decisions[mediaFileId] ?? makeDirectDecision(mediaFileId);
+      return { status: 200, body: decision };
+    }
+
+    // POST /api/stream/hls/:mediaFileId — start a session; DELETE — stop it.
+    const hlsMatch = /^\/api\/stream\/hls\/([^/]+)$/.exec(path);
+    if (hlsMatch !== null && method === 'POST') {
+      const query = new URL(url, 'http://localhost').searchParams;
+      state.hlsSessionCounter += 1;
+      const sessionId = `session-${state.hlsSessionCounter}`;
+      const token = query.get('token') ?? MOCK_STREAM_TOKEN;
+      const audioTrack = query.get('audioTrack');
+      const startOffset = query.get('startOffset');
+      return {
+        status: 200,
+        body: {
+          sessionId,
+          playlistUrl: `/api/stream/hls/${sessionId}/index.m3u8?token=${token}`,
+          quality: query.get('quality') ?? state.qualities.defaultQuality,
+          audioTrackIndex: audioTrack !== null ? Number(audioTrack) : 0,
+          downmixStereo: query.get('downmixStereo') === 'true',
+          startOffsetSec: startOffset !== null ? Math.floor(Number(startOffset)) : 0,
+        },
+      };
+    }
+    if (hlsMatch !== null && method === 'DELETE') {
+      return { status: 204 };
+    }
+
+    // GET /api/stream/audio/:mediaFileId — selectable audio tracks (token-authed).
+    const audioMatch = /^\/api\/stream\/audio\/([^/]+)$/.exec(path);
+    if (audioMatch !== null && method === 'GET') {
+      const mediaFileId = decodeURIComponent(audioMatch[1] ?? '');
+      return { status: 200, body: { mediaFileId, tracks: state.audioTracks[mediaFileId] ?? [] } };
+    }
+
+    // GET /api/stream/subtitles/:mediaFileId — subtitle tracks (token-authed).
+    const subtitlesMatch = /^\/api\/stream\/subtitles\/([^/]+)$/.exec(path);
+    if (subtitlesMatch !== null && method === 'GET') {
+      const mediaFileId = decodeURIComponent(subtitlesMatch[1] ?? '');
+      return { status: 200, body: { mediaFileId, tracks: state.subtitles[mediaFileId] ?? [] } };
     }
 
     return { status: 404, body: err('NOT_FOUND', `No mock for ${method} ${path}`) };

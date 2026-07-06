@@ -1,0 +1,484 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { MemoryRouter } from 'react-router';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+
+import Hls from 'hls.js';
+
+import { AppRoutes } from '../app/AppRoutes';
+import { Providers } from '../app/Providers';
+import {
+  installMockApi,
+  makeAudioTrack,
+  makeDetail,
+  makeDirectDecision,
+  makeFile,
+  makeItem,
+  makeQualities,
+  makeSubtitleTrack,
+  makeTranscodeDecision,
+  makeUser,
+  type MockApi,
+  type MockApiConfig,
+} from '../test/mockApi';
+import { createTestQueryClient, renderApp } from '../test/renderApp';
+
+// hls.js is mocked wholesale: a fake class recording its instances plus the
+// static surface the player touches (isSupported / Events). jsdom cannot play
+// media, so the transcode path is verified by asserting loadSource/attachMedia
+// were called — the real segment loading never runs.
+vi.mock('hls.js', () => {
+  class FakeHls {
+    static Events = { ERROR: 'hlsError', MANIFEST_PARSED: 'hlsManifestParsed' };
+    static isSupported = vi.fn(() => true);
+    static instances: FakeHls[] = [];
+    loadSource = vi.fn();
+    attachMedia = vi.fn();
+    on = vi.fn();
+    destroy = vi.fn();
+    constructor() {
+      FakeHls.instances.push(this);
+    }
+  }
+  return { default: FakeHls };
+});
+
+interface FakeHlsInstance {
+  loadSource: Mock;
+  attachMedia: Mock;
+  on: Mock;
+  destroy: Mock;
+}
+const HlsMock = Hls as unknown as { instances: FakeHlsInstance[]; isSupported: Mock };
+
+let playSpy: Mock;
+let pauseSpy: Mock;
+let requestFullscreenSpy: Mock;
+
+beforeEach(() => {
+  HlsMock.instances.length = 0;
+  HlsMock.isSupported.mockReturnValue(true);
+
+  // jsdom's HTMLMediaElement throws on play(); stub play/pause so they drive the
+  // paused flag + fire the matching events, and back currentTime with a field.
+  playSpy = vi.fn(function (this: HTMLMediaElement) {
+    (this as unknown as { _paused: boolean })._paused = false;
+    this.dispatchEvent(new Event('play'));
+    return Promise.resolve();
+  });
+  pauseSpy = vi.fn(function (this: HTMLMediaElement) {
+    (this as unknown as { _paused: boolean })._paused = true;
+    this.dispatchEvent(new Event('pause'));
+  });
+  Object.defineProperty(HTMLMediaElement.prototype, 'play', { configurable: true, value: playSpy });
+  Object.defineProperty(HTMLMediaElement.prototype, 'pause', {
+    configurable: true,
+    value: pauseSpy,
+  });
+  Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
+    configurable: true,
+    get(this: { _paused?: boolean }) {
+      return this._paused ?? true;
+    },
+  });
+  Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+    configurable: true,
+    get(this: { _ct?: number }) {
+      return this._ct ?? 0;
+    },
+    set(this: { _ct?: number }, value: number) {
+      this._ct = value;
+    },
+  });
+
+  requestFullscreenSpy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(Element.prototype, 'requestFullscreen', {
+    configurable: true,
+    value: requestFullscreenSpy,
+  });
+  Object.defineProperty(document, 'exitFullscreen', {
+    configurable: true,
+    value: vi.fn().mockResolvedValue(undefined),
+  });
+});
+
+function setup(config: MockApiConfig, path: string): { api: MockApi; view: ReturnType<typeof renderApp> } {
+  const api = installMockApi({ session: makeUser({ username: 'alli' }), ...config });
+  const view = renderApp([path]);
+  return { api, view };
+}
+
+/** POST /api/stream/hls/:mediaFileId calls, as parsed URLs (start requests). */
+function hlsStartCalls(api: MockApi, mediaFileId: string): URL[] {
+  return api.fetchMock.mock.calls
+    .filter(([url, init]) => {
+      const parsed = new URL(String(url), 'http://localhost');
+      return (
+        parsed.pathname === `/api/stream/hls/${mediaFileId}` &&
+        (init as RequestInit | undefined)?.method === 'POST'
+      );
+    })
+    .map(([url]) => new URL(String(url), 'http://localhost'));
+}
+
+/** DELETE /api/stream/hls/:sessionId calls, as parsed URLs. */
+function hlsDeleteCalls(api: MockApi): URL[] {
+  return api.fetchMock.mock.calls
+    .filter(
+      ([url, init]) =>
+        /\/api\/stream\/hls\/[^/]+(\?|$)/.test(String(url)) &&
+        (init as RequestInit | undefined)?.method === 'DELETE',
+    )
+    .map(([url]) => new URL(String(url), 'http://localhost'));
+}
+
+/** Bodies of POST /api/items/:id/progress calls. */
+function progressCalls(api: MockApi, itemId: string): { positionMs: number }[] {
+  return api.fetchMock.mock.calls
+    .filter(
+      ([url, init]) =>
+        String(url).includes(`/api/items/${itemId}/progress`) &&
+        (init as RequestInit | undefined)?.method === 'POST',
+    )
+    .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { positionMs: number });
+}
+
+describe('PlayerPage — decision & attach', () => {
+  it('direct play: points the <video> at the token-carrying direct URL', async () => {
+    const { api } = setup(
+      { decisions: { 'file-1': makeDirectDecision('file-1') } },
+      '/player/file-1',
+    );
+
+    const video = await screen.findByTestId('player-video');
+    await waitFor(() =>
+      expect(video.getAttribute('src')).toBe('/api/stream/direct/file-1?token=stream-token'),
+    );
+
+    const decided = api.fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url).includes('/api/stream/decide/file-1') &&
+        (init as RequestInit | undefined)?.method === 'POST',
+    );
+    expect(decided).toBe(true);
+    // Direct play never spins up hls.js.
+    expect(HlsMock.instances).toHaveLength(0);
+  });
+
+  it('transcode: starts an HLS session and attaches hls.js to the playlist', async () => {
+    const { api } = setup(
+      { decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') } },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+    await waitFor(() => expect(HlsMock.instances.length).toBeGreaterThan(0));
+
+    const instance = HlsMock.instances.at(-1);
+    expect(instance).toBeDefined();
+    await waitFor(() => expect(instance?.loadSource).toHaveBeenCalled());
+    const playlistUrl = String(instance?.loadSource.mock.calls[0]?.[0]);
+    expect(playlistUrl).toMatch(/\/api\/stream\/hls\/session-\d+\/index\.m3u8\?token=stream-token/);
+    expect(instance?.attachMedia).toHaveBeenCalled();
+
+    // The first start requests the server-chosen rung from t=0.
+    const first = hlsStartCalls(api, 'file-1')[0];
+    expect(first?.searchParams.get('quality')).toBe('720p');
+    expect(first?.searchParams.get('startOffset')).toBe('0');
+  });
+
+  it('shows an error with a link back when the decision is forbidden (404)', async () => {
+    const api = installMockApi({ session: makeUser() });
+    const real = api.fetchMock.getMockImplementation();
+    api.fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (/\/api\/stream\/decide\//.test(String(input))) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'gone' } }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return real!(input, init);
+    });
+    renderApp(['/player/file-1']);
+
+    expect(await screen.findByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Go back' })).toBeInTheDocument();
+  });
+});
+
+describe('PlayerPage — quality / audio / subtitles', () => {
+  it('quality menu lists /api/qualities and switching restarts the session at the current position', async () => {
+    const { api } = setup(
+      {
+        decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') },
+        qualities: makeQualities(),
+      },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    video.currentTime = 42;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Quality/ }));
+    // The menu lists every permitted rung.
+    expect(screen.getByRole('menuitemradio', { name: /1080p/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /480p/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /480p/ }));
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(2));
+    const restart = hlsStartCalls(api, 'file-1').at(-1);
+    expect(restart?.searchParams.get('quality')).toBe('480p');
+    expect(restart?.searchParams.get('startOffset')).toBe('42');
+    // Restarting frees the previous transcode session.
+    expect(hlsDeleteCalls(api).length).toBeGreaterThan(0);
+  });
+
+  it('audio menu switches the track, restarting the session with the new audioTrack', async () => {
+    const { api } = setup(
+      {
+        decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') },
+        audioTracks: {
+          'file-1': [
+            makeAudioTrack({ index: 0, label: 'English Stereo (AAC)', default: true }),
+            makeAudioTrack({ index: 1, label: 'French Stereo (AAC)', language: 'fra', default: false }),
+          ],
+        },
+      },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    video.currentTime = 20;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Audio/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /French/ }));
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(2));
+    const restart = hlsStartCalls(api, 'file-1').at(-1);
+    expect(restart?.searchParams.get('audioTrack')).toBe('1');
+    expect(restart?.searchParams.get('startOffset')).toBe('20');
+  });
+
+  it('renders a text subtitle <track>, toggles it on/off, and disables image subs', async () => {
+    setup(
+      {
+        decisions: { 'file-1': makeDirectDecision('file-1') },
+        subtitles: {
+          'file-1': [
+            makeSubtitleTrack({ id: 'embedded-2', kind: 'text', label: 'English' }),
+            makeSubtitleTrack({ id: 'embedded-3', kind: 'image', label: 'Spanish (PGS)' }),
+          ],
+        },
+      },
+      '/player/file-1',
+    );
+
+    const video = await screen.findByTestId('player-video');
+    // Only the text track is added as a <track>, pointing at the token .vtt URL.
+    await waitFor(() => expect(video.querySelectorAll('track')).toHaveLength(1));
+    const track = video.querySelector('track');
+    expect(track?.getAttribute('src')).toBe(
+      '/api/stream/subtitles/file-1/embedded-2.vtt?token=stream-token',
+    );
+
+    // Image-based tracks are surfaced but disabled with an explanatory tooltip.
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Subtitles/ }));
+    const imageOption = screen.getByRole('menuitemradio', { name: /Spanish \(PGS\)/ });
+    expect(imageOption).toHaveAttribute('aria-disabled', 'true');
+    expect(imageOption).toHaveAttribute('title', 'Not supported in browser');
+
+    // The quick-toggle turns subtitles on (first text track) then off again.
+    const toggle = screen.getByRole('button', { name: 'Toggle subtitles' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
+describe('PlayerPage — resume, progress & lifecycle', () => {
+  const resumeConfig = (): MockApiConfig => {
+    const item = makeItem({
+      id: 'movie-1',
+      type: 'movie',
+      title: 'Interstellar',
+      runtimeMs: 120_000,
+      watchState: {
+        watched: false,
+        positionMs: 45_000,
+        episodeCount: 0,
+        watchedEpisodeCount: 0,
+        nextUnwatchedId: null,
+      },
+    });
+    return {
+      decisions: { 'file-1': makeDirectDecision('file-1') },
+      details: { 'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }) },
+    };
+  };
+
+  it('prompts to resume and "Start over" begins at 0', async () => {
+    setup(resumeConfig(), '/player/file-1?item=movie-1');
+
+    expect(await screen.findByRole('dialog', { name: 'Resume playback' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Start over/ }));
+
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+    expect(video.currentTime).toBe(0);
+    expect(playSpy).toHaveBeenCalled();
+  });
+
+  it('"Resume" begins at the stored position', async () => {
+    setup(resumeConfig(), '/player/file-1?item=movie-1');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Resume from/ }));
+
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+    expect(video.currentTime).toBe(45);
+  });
+
+  it('reports progress on pause and again on unmount with the item id + position', async () => {
+    const item = makeItem({ id: 'movie-1', type: 'movie', title: 'Dune', runtimeMs: 120_000 });
+    const { api, view } = setup(
+      {
+        decisions: { 'file-1': makeDirectDecision('file-1') },
+        details: { 'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }) },
+      },
+      '/player/file-1?item=movie-1',
+    );
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    video.currentTime = 15;
+    fireEvent.pause(video);
+    await waitFor(() => expect(progressCalls(api, 'movie-1').length).toBeGreaterThan(0));
+    expect(progressCalls(api, 'movie-1').at(-1)?.positionMs).toBe(15_000);
+
+    video.currentTime = 30;
+    fireEvent.timeUpdate(video);
+    view.unmount();
+    await waitFor(() =>
+      expect(progressCalls(api, 'movie-1').some((call) => call.positionMs === 30_000)).toBe(true),
+    );
+  });
+
+  it('deletes the HLS session on unmount to free the transcode slot', async () => {
+    const { api, view } = setup(
+      { decisions: { 'file-1': makeTranscodeDecision('file-1') } },
+      '/player/file-1',
+    );
+
+    await waitFor(() => expect(hlsStartCalls(api, 'file-1')).toHaveLength(1));
+    view.unmount();
+
+    await waitFor(() => expect(hlsDeleteCalls(api).length).toBeGreaterThan(0));
+    expect(hlsDeleteCalls(api)[0]?.pathname).toBe('/api/stream/hls/session-1');
+  });
+});
+
+describe('PlayerPage — session lifecycle robustness', () => {
+  it('attaches hls.js under a StrictMode double-mount (transcode)', async () => {
+    installMockApi({
+      session: makeUser(),
+      decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') },
+    });
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/player/file-1']}>
+          <Providers queryClient={createTestQueryClient()}>
+            <AppRoutes />
+          </Providers>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    // The double-mount must not leave the video without a stream: exactly one
+    // hls.js instance ends up with the playlist loaded.
+    await waitFor(() =>
+      expect(HlsMock.instances.filter((i) => i.loadSource.mock.calls.length > 0)).toHaveLength(1),
+    );
+  });
+
+  it('rapid quality switches attach only the latest session and free the superseded one', async () => {
+    const api = installMockApi({
+      session: makeUser(),
+      decisions: { 'file-1': makeTranscodeDecision('file-1', '720p') },
+      qualities: makeQualities(),
+    });
+
+    // Gate hls-start responses so two switches can be in flight simultaneously.
+    const real = api.fetchMock.getMockImplementation();
+    const gates: Array<() => void> = [];
+    let gateStarts = false;
+    api.fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const isStart =
+        /\/api\/stream\/hls\/file-1(\?|$)/.test(String(input)) &&
+        (init?.method ?? 'GET').toUpperCase() === 'POST';
+      if (gateStarts && isStart) {
+        return new Promise<Response>((resolve) => {
+          gates.push(() => resolve(real!(input, init) as Promise<Response>));
+        });
+      }
+      return real!(input, init) as Promise<Response>;
+    });
+
+    renderApp(['/player/file-1']);
+    await waitFor(() => expect(HlsMock.instances).toHaveLength(1));
+
+    gateStarts = true;
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    video.currentTime = 10;
+
+    // Switch to 480p, then immediately to 360p (both start requests gated).
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Quality/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /480p/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Quality/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /360p/ }));
+
+    await waitFor(() => expect(gates).toHaveLength(2));
+    // Release both in-flight starts; the superseded (480p) one must be discarded.
+    gates.forEach((release) => release());
+
+    await waitFor(() => expect(HlsMock.instances).toHaveLength(2));
+    const latest = HlsMock.instances.at(-1);
+    expect(String(latest?.loadSource.mock.calls[0]?.[0])).toContain('session-3');
+    // The orphaned 480p session (session-2) was DELETEd, not leaked.
+    await waitFor(() =>
+      expect(hlsDeleteCalls(api).some((url) => url.pathname === '/api/stream/hls/session-2')).toBe(
+        true,
+      ),
+    );
+  });
+});
+
+describe('PlayerPage — keyboard shortcuts', () => {
+  it('space toggles play/pause and "f" requests fullscreen', async () => {
+    setup({ decisions: { 'file-1': makeDirectDecision('file-1') } }, '/player/file-1');
+
+    await screen.findByTestId('player-video');
+    await waitFor(() => expect(playSpy).toHaveBeenCalled());
+
+    // Playing → space pauses.
+    fireEvent.keyDown(window, { key: ' ' });
+    expect(pauseSpy).toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: 'f' });
+    expect(requestFullscreenSpy).toHaveBeenCalled();
+  });
+});
