@@ -38,6 +38,16 @@ export interface SubtitleStreamInfo {
   forced: boolean;
 }
 
+/** One chapter marker of a media file (the player's timeline chapter ticks). */
+export interface ChapterInfo {
+  index: number;
+  /** Chapter start, milliseconds from the file start. */
+  startMs: number;
+  /** Chapter end, milliseconds from the file start. */
+  endMs: number;
+  title: string | null;
+}
+
 /** A playable file/version of a movie or episode (no filesystem path leaked). */
 export interface MediaFileInfo {
   id: string;
@@ -51,6 +61,8 @@ export interface MediaFileInfo {
   size: number;
   audioStreams: AudioStreamInfo[];
   subtitleStreams: SubtitleStreamInfo[];
+  /** Chapter markers in file order; empty when the file has none. */
+  chapters: ChapterInfo[];
 }
 
 /** A serialized episode carries the extra fields a play button needs. */

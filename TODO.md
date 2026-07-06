@@ -73,7 +73,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **collections** — Manual collections (group movies), auto-collections from TMDB collection data
 - [ ] **playlists** — Per-user playlists of arbitrary videos, ordering, continuous playback
 - [x] **chapters-trickplay** — Chapter markers from ffprobe + scrub-preview thumbnails (BIF-style sprite generation during scan)
-- [ ] **web-trickplay-scrubber** — Player-side scrub-preview UI: consume the trickplay manifest + sprite endpoints (`/api/stream/trickplay/:mediaFileId/manifest` + `/:sprite`) to show a thumbnail preview on seek-bar hover, and render chapter markers (from the file serialization's `chapters`) on the timeline. Split out of chapters-trickplay (that item covers the server side only)
+- [x] **web-trickplay-scrubber** — Player-side scrub-preview UI: consume the trickplay manifest + sprite endpoints (`/api/stream/trickplay/:mediaFileId/manifest` + `/:sprite`) to show a thumbnail preview on seek-bar hover, and render chapter markers (from the file serialization's `chapters`) on the timeline. Split out of chapters-trickplay (that item covers the server side only)
 - [ ] **skip-markers** — Intro/credits skip buttons (chapter-based + configurable per-show offsets)
 - [ ] **multi-version** — Multiple files per movie (1080p/4K/Director's Cut): grouping, version picker in player
 - [x] **parental-controls** — Content-rating restrictions per user (e.g. max PG-13), enforced server-side alongside library grants

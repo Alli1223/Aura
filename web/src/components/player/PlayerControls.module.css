@@ -125,6 +125,37 @@
   background: #fff;
 }
 
+/* ---- Chapter markers + scrub preview ------------------------------------- */
+
+.chapterMarker {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.chapterMarker:hover,
+.chapterMarker:focus-visible {
+  height: 16px;
+  background: var(--color-accent);
+  outline: none;
+}
+
+.previewAnchor {
+  position: absolute;
+  bottom: calc(100% + var(--space-2));
+  transform: translateX(-50%);
+  z-index: 2;
+  pointer-events: none;
+}
+
 .buttonRow {
   display: flex;
   align-items: center;
