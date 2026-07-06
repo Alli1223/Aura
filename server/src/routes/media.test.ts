@@ -135,6 +135,12 @@ async function addFile(mediaItemId: string, name: string): Promise<string> {
           },
         ],
       },
+      chapters: {
+        create: [
+          { index: 0, startMs: 0, endMs: 60_000, title: 'Opening' },
+          { index: 1, startMs: 60_000, endMs: 5_400_000, title: null },
+        ],
+      },
     },
   });
   return file.id;
@@ -524,6 +530,7 @@ describe('GET /api/items/:id (detail)', () => {
         size: number;
         audioStreams: Array<{ index: number; codec: string; channels: number; default: boolean }>;
         subtitleStreams: Array<{ index: number; codec: string; forced: boolean }>;
+        chapters: Array<{ index: number; startMs: number; endMs: number; title: string | null }>;
       }>;
       seasons: unknown[];
       episodes: unknown[];
@@ -549,6 +556,11 @@ describe('GET /api/items/:id (detail)', () => {
     });
     expect(file.subtitleStreams).toHaveLength(1);
     expect(file.subtitleStreams[0]).toMatchObject({ index: 2, codec: 'subrip', forced: false });
+    // Chapter markers are surfaced in file order.
+    expect(file.chapters).toEqual([
+      { index: 0, startMs: 0, endMs: 60_000, title: 'Opening' },
+      { index: 1, startMs: 60_000, endMs: 5_400_000, title: null },
+    ]);
     // No filesystem path is exposed on the file.
     expect(JSON.stringify(file)).not.toContain('path');
   });

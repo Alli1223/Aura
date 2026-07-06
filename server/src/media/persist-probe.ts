@@ -5,8 +5,8 @@ import { realVideoStreams, type ProbeResult } from './ffprobe.js';
  * Persists a ProbeResult onto an existing MediaFile row: updates the file's
  * container/duration/bitrate/dimensions/videoCodec (video fields come from
  * the first real — non cover art — video stream) and replaces all of its
- * MediaStream rows in a single transaction, so re-probing the same file is
- * idempotent and never leaves duplicate or stale stream rows behind.
+ * MediaStream and Chapter rows in a single transaction, so re-probing the same
+ * file is idempotent and never leaves duplicate or stale rows behind.
  *
  * Throws Prisma's P2025 error if `mediaFileId` does not exist.
  */
@@ -26,6 +26,14 @@ export async function persistProbe(mediaFileId: string, probe: ProbeResult): Pro
     isForced: stream.isForced,
   }));
 
+  const chapterRows = probe.chapters.map((chapter) => ({
+    mediaFileId,
+    index: chapter.index,
+    startMs: chapter.startMs,
+    endMs: chapter.endMs,
+    title: chapter.title ?? null,
+  }));
+
   await prisma.$transaction([
     prisma.mediaFile.update({
       where: { id: mediaFileId },
@@ -40,5 +48,7 @@ export async function persistProbe(mediaFileId: string, probe: ProbeResult): Pro
     }),
     prisma.mediaStream.deleteMany({ where: { mediaFileId } }),
     prisma.mediaStream.createMany({ data: streamRows }),
+    prisma.chapter.deleteMany({ where: { mediaFileId } }),
+    prisma.chapter.createMany({ data: chapterRows }),
   ]);
 }

@@ -11,7 +11,7 @@ import {
   MEDIA_ADDED_EMISSION_CAP,
   type DispatchFn,
 } from '../lib/webhooks.js';
-import { isVideoFile, probeFile, type ProbeResult } from '../media/ffprobe.js';
+import { isVideoFile, probeFile, realVideoStreams, type ProbeResult } from '../media/ffprobe.js';
 import { persistProbe } from '../media/persist-probe.js';
 import { parseEpisodePath, parseMoviePath } from './filename-parser.js';
 
@@ -82,6 +82,25 @@ export interface ScanStats {
 /** Probe function signature; injectable so tests can count/stall/fake probes. */
 export type ProbeFn = (absPath: string) => Promise<ProbeResult>;
 
+/** A newly added/updated video file handed to the trickplay pre-warm hook. */
+export interface TrickplayScanFile {
+  id: string;
+  path: string;
+  width: number | null;
+  height: number | null;
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
+/**
+ * Best-effort trickplay pre-warm hook, run once per newly added/updated file
+ * AFTER the scan's database work completes. Injected by callers that have the
+ * server config (so it can honour TRICKPLAY_ENABLED and bound the work); absent
+ * in the watcher/scheduler paths, which rely on on-demand generation instead.
+ * A rejection is logged and swallowed — a preview must never fail a scan.
+ */
+export type TrickplayScanHook = (file: TrickplayScanFile) => Promise<void>;
+
 export interface ScanOptions {
   /**
    * Media roots for path containment checks. Defaults to the MEDIA_ROOTS
@@ -99,6 +118,12 @@ export interface ScanOptions {
    * dispatchEvent. Injectable so tests can assert emission with a spy.
    */
   dispatch?: DispatchFn;
+  /**
+   * Best-effort trickplay pre-warm, run for each newly added/updated file after
+   * the scan's DB work. Defaults to no pre-warm (watcher/scheduler paths and
+   * every existing test), so the scan is unchanged unless a caller opts in.
+   */
+  trickplay?: TrickplayScanHook;
   log?: FastifyBaseLogger;
 }
 
@@ -562,6 +587,7 @@ export async function scanLibrary(libraryId: string, opts: ScanOptions = {}): Pr
   });
 
   const resolver = new ItemResolver(prisma, libraryId, stats);
+  const prewarm: TrickplayScanFile[] = [];
   for (const { candidate, plan } of jobs) {
     const result = probed.get(candidate.absPath);
     if (result === undefined) continue; // probe failed; already recorded
@@ -571,6 +597,7 @@ export async function scanLibrary(libraryId: string, opts: ScanOptions = {}): Pr
         byPathRow: byPath.get(candidate.absPath),
         resolvedMediaRoots,
         now,
+        prewarm,
         log,
       });
     } catch (err) {
@@ -584,6 +611,20 @@ export async function scanLibrary(libraryId: string, opts: ScanOptions = {}): Pr
   // webhooks. Fire-and-forget so a slow/broken subscriber never delays or
   // fails the scan.
   emitMediaAdded(dispatch, libraryId, resolver.newTopLevelItems, log);
+
+  // Trickplay pre-warm: generate scrub-preview sprites for the files added this
+  // scan, but only when a caller wired the hook (it self-bounds and honours
+  // TRICKPLAY_ENABLED). Runs after all DB work, sequentially and best-effort —
+  // a preview failure never affects the scan result.
+  if (opts.trickplay !== undefined) {
+    for (const file of prewarm) {
+      try {
+        await opts.trickplay(file);
+      } catch (err) {
+        log?.debug({ path: file.path, err }, 'scan: trickplay pre-warm failed');
+      }
+    }
+  }
 
   // Deletion pass: rows under the scanned roots that were not seen on disk.
   // Rows are kept (status "missing") so a returning disk restores cleanly;
@@ -616,6 +657,8 @@ interface StoreContext {
   /** Realpath-resolved media roots (missing roots already dropped). */
   resolvedMediaRoots: readonly string[];
   now: Date;
+  /** Files added/updated this scan, collected for the trickplay pre-warm pass. */
+  prewarm: TrickplayScanFile[];
   log?: FastifyBaseLogger;
 }
 
@@ -686,4 +729,16 @@ async function storeCandidate(
   // that fails mid-store is recorded as skipped + error, nothing else.
   if (ctx.byPathRow === undefined) stats.filesAdded += 1;
   else stats.filesUpdated += 1;
+
+  // Queue this file for the trickplay pre-warm pass (only if a hook is wired).
+  // Dimensions come from the first real video stream, matching persistProbe.
+  const video = realVideoStreams(probe)[0];
+  ctx.prewarm.push({
+    id: fileId,
+    path: candidate.absPath,
+    width: video?.width ?? null,
+    height: video?.height ?? null,
+    sizeBytes: candidate.size,
+    mtimeMs: candidate.mtimeMs,
+  });
 }

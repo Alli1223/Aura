@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyBaseLogger, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
 import type { Config } from '../config.js';
@@ -6,7 +6,9 @@ import { getPrisma } from '../db/client.js';
 import { writeAuditLog } from '../lib/audit.js';
 import { sendError } from '../lib/errors.js';
 import { parseParams } from '../lib/validation.js';
+import { ensureTrickplay, trickplayCacheRoot } from '../media/trickplay.js';
 import { getScanState, startScan, type ScanState } from '../scanner/scan-manager.js';
+import type { TrickplayScanHook } from '../scanner/scan.js';
 
 // Scan trigger + status endpoints. All admin-only: scanning is a server
 // maintenance operation and scan state (paths, error messages) must not
@@ -18,6 +20,36 @@ export interface ScanRoutesOptions {
 }
 
 const LIBRARY_NOT_FOUND_MESSAGE = 'Library not found';
+
+/**
+ * How many freshly added/updated files one manual scan pre-warms trickplay for.
+ * A hard bound so a first scan of a large library is never blocked decoding
+ * every video for previews — the rest are generated on demand at scrub time.
+ */
+const TRICKPLAY_SCAN_PREWARM_CAP = 50;
+
+/**
+ * A bounded, best-effort trickplay pre-warm hook for a manual scan, or
+ * undefined when trickplay is disabled (so the scanner does no preview work).
+ * Each returned hook caps itself at TRICKPLAY_SCAN_PREWARM_CAP files; beyond
+ * that, previews are generated on demand at scrub time.
+ */
+function makeTrickplayHook(config: Config, log: FastifyBaseLogger): TrickplayScanHook | undefined {
+  if (!config.TRICKPLAY_ENABLED) return undefined;
+  const cacheRoot = trickplayCacheRoot(config.CONFIG_DIR);
+  let generated = 0;
+  return async (file) => {
+    if (generated >= TRICKPLAY_SCAN_PREWARM_CAP) return;
+    generated += 1;
+    await ensureTrickplay(file, {
+      cacheRoot,
+      mediaRoots: config.MEDIA_ROOTS,
+      intervalSec: config.TRICKPLAY_INTERVAL_SEC,
+      thumbWidth: config.TRICKPLAY_THUMB_WIDTH,
+    });
+    log.debug({ mediaFileId: file.id }, 'scan: pre-warmed trickplay');
+  };
+}
 
 const libraryIdParamsSchema = z.object({ id: z.string().min(1, 'Library id is required') });
 
@@ -48,7 +80,8 @@ export const scanRoutes: FastifyPluginAsync<ScanRoutesOptions> = async (app, opt
       return sendError(reply, 404, 'NOT_FOUND', LIBRARY_NOT_FOUND_MESSAGE);
     }
 
-    if (!startScan(library.id, { mediaRoots, log: request.log })) {
+    const trickplay = makeTrickplayHook(opts.config, request.log);
+    if (!startScan(library.id, { mediaRoots, log: request.log, ...(trickplay ? { trickplay } : {}) })) {
       return sendError(
         reply,
         409,
@@ -91,11 +124,18 @@ export const scanRoutes: FastifyPluginAsync<ScanRoutesOptions> = async (app, opt
   app.post('/scan', adminOnly, async (request, reply) => {
     const libraries = await prisma.library.findMany({ orderBy: { name: 'asc' } });
 
-    const results = libraries.map((library) => ({
-      libraryId: library.id,
-      name: library.name,
-      started: startScan(library.id, { mediaRoots, log: request.log }),
-    }));
+    const results = libraries.map((library) => {
+      const trickplay = makeTrickplayHook(opts.config, request.log);
+      return {
+        libraryId: library.id,
+        name: library.name,
+        started: startScan(library.id, {
+          mediaRoots,
+          log: request.log,
+          ...(trickplay ? { trickplay } : {}),
+        }),
+      };
+    });
 
     for (const result of results) {
       if (!result.started) continue;

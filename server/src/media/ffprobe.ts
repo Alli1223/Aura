@@ -62,6 +62,19 @@ export interface ProbeSubtitleStream extends ProbeStreamBase {
 
 export type ProbeStream = ProbeVideoStream | ProbeAudioStream | ProbeSubtitleStream;
 
+/**
+ * One chapter marker from ffprobe's `-show_chapters`. `index` is the chapter's
+ * 0-based ordinal in file order (not ffprobe's `id`, which is not guaranteed
+ * contiguous); `startMs`/`endMs` are milliseconds from the start of the file.
+ */
+export interface ProbeChapter {
+  index: number;
+  startMs: number;
+  endMs: number;
+  /** The chapter's title tag, or undefined when it has none. */
+  title: string | undefined;
+}
+
 export interface ProbeResult {
   /** Container format name as reported by ffprobe (e.g. "matroska,webm"). */
   container: string;
@@ -71,6 +84,8 @@ export interface ProbeResult {
   sizeBytes: number | undefined;
   /** Video/audio/subtitle streams; data and attachment streams are dropped. */
   streams: ProbeStream[];
+  /** Chapter markers in file order; empty when the file has none. */
+  chapters: ProbeChapter[];
 }
 
 export type ProbeErrorKind =
@@ -136,6 +151,16 @@ const rawStreamSchema = z.object({
   disposition: z.record(z.string(), z.number()).optional(),
 });
 
+// A chapter's start/end come as both integer time_base units (`start`/`end`)
+// and pre-computed seconds strings (`start_time`/`end_time`). We consume the
+// seconds strings — they fold the time_base in already and match how durations
+// are handled elsewhere.
+const rawChapterSchema = z.object({
+  start_time: z.string().optional(),
+  end_time: z.string().optional(),
+  tags: rawTagsSchema.optional(),
+});
+
 const rawProbeOutputSchema = z.object({
   format: z.object({
     format_name: z.string(),
@@ -144,9 +169,11 @@ const rawProbeOutputSchema = z.object({
     size: z.string().optional(),
   }),
   streams: z.array(rawStreamSchema).default([]),
+  chapters: z.array(rawChapterSchema).default([]),
 });
 
 type RawStream = z.infer<typeof rawStreamSchema>;
+type RawChapter = z.infer<typeof rawChapterSchema>;
 
 // ---------------------------------------------------------------------------
 // Mapping helpers
@@ -186,6 +213,29 @@ function durationToMs(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const seconds = Number.parseFloat(raw);
   return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+}
+
+/**
+ * Maps ffprobe's raw chapters to typed ProbeChapters in file order. Chapters
+ * whose start/end are missing or unparseable are dropped rather than failing
+ * the whole probe. `index` is the surviving-chapter ordinal, so the persisted
+ * indices are always contiguous 0..n-1; an end before its start is clamped up
+ * to the start (a zero-length marker) rather than stored inverted.
+ */
+function mapChapters(raw: readonly RawChapter[]): ProbeChapter[] {
+  const chapters: ProbeChapter[] = [];
+  for (const chapter of raw) {
+    const startMs = durationToMs(chapter.start_time);
+    if (startMs === undefined) continue;
+    const endMs = durationToMs(chapter.end_time) ?? startMs;
+    chapters.push({
+      index: chapters.length,
+      startMs,
+      endMs: Math.max(endMs, startMs),
+      title: tagValue(chapter.tags, 'title'),
+    });
+  }
+  return chapters;
 }
 
 function mapStream(raw: RawStream): ProbeStream | undefined {
@@ -241,7 +291,16 @@ export async function probeFile(absPath: string, options: ProbeOptions = {}): Pr
     });
   }
 
-  const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', absPath];
+  const args = [
+    '-v',
+    'error',
+    '-print_format',
+    'json',
+    '-show_format',
+    '-show_streams',
+    '-show_chapters',
+    absPath,
+  ];
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync(ffprobePath, args, {
@@ -270,13 +329,14 @@ export async function probeFile(absPath: string, options: ProbeOptions = {}): Pr
     );
   }
 
-  const { format, streams } = parsed.data;
+  const { format, streams, chapters } = parsed.data;
   return {
     container: format.format_name,
     durationMs: durationToMs(format.duration),
     bitrate: parsePositiveInt(format.bit_rate),
     sizeBytes: parsePositiveInt(format.size),
     streams: streams.map(mapStream).filter((stream) => stream !== undefined),
+    chapters: mapChapters(chapters),
   };
 }
 

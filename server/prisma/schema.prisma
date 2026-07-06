@@ -225,9 +225,27 @@ model MediaFile {
   /// One of MEDIA_FILE_STATUSES: "available" | "missing".
   status      String    @default("available")
 
-  streams MediaStream[]
+  streams  MediaStream[]
+  chapters Chapter[]
 
   @@index([mediaItemId])
+}
+
+/// Chapter markers extracted from a file via ffprobe (-show_chapters). Like
+/// MediaStream, the full set is replaced on every re-probe (deleteMany +
+/// createMany), so `index` is always the contiguous 0-based ordinal in file
+/// order and `startMs`/`endMs` are milliseconds from the start of the file.
+model Chapter {
+  id          String    @id @default(cuid())
+  mediaFileId String
+  mediaFile   MediaFile @relation(fields: [mediaFileId], references: [id], onDelete: Cascade)
+  index       Int
+  startMs     Int
+  endMs       Int
+  title       String?
+
+  @@unique([mediaFileId, index])
+  @@index([mediaFileId])
 }
 
 /// ffprobe stream info per file, used for playback/transcode decisions.

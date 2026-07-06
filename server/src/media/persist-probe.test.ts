@@ -126,6 +126,10 @@ function movieProbe(): ProbeResult {
         isForced: true,
       },
     ],
+    chapters: [
+      { index: 0, startMs: 0, endMs: 60_000, title: 'Opening' },
+      { index: 1, startMs: 60_000, endMs: 5_400_000, title: undefined },
+    ],
   };
 }
 
@@ -253,6 +257,7 @@ describe('persistProbe', () => {
           isForced: false,
         },
       ],
+      chapters: [{ index: 0, startMs: 0, endMs: 5_400_100, title: 'Whole' }],
     };
     await persistProbe(mediaFileId, remuxed);
 
@@ -270,6 +275,35 @@ describe('persistProbe', () => {
     });
     expect(file.streams).toHaveLength(2);
     expect(file.streams.map((s) => s.codec)).toEqual(['hevc', 'aac']);
+  });
+
+  it('persists chapters and replaces them wholesale on re-probe', async () => {
+    const mediaFileId = await createMediaFile();
+    await persistProbe(mediaFileId, movieProbe());
+
+    const chapters = await prisma.chapter.findMany({
+      where: { mediaFileId },
+      orderBy: { index: 'asc' },
+    });
+    expect(chapters).toHaveLength(2);
+    expect(chapters[0]).toMatchObject({ index: 0, startMs: 0, endMs: 60_000, title: 'Opening' });
+    expect(chapters[1]).toMatchObject({ index: 1, startMs: 60_000, endMs: 5_400_000, title: null });
+
+    // Re-probe reporting one chapter replaces the whole set (no stale rows).
+    await persistProbe(mediaFileId, {
+      ...movieProbe(),
+      chapters: [{ index: 0, startMs: 0, endMs: 5_400_000, title: 'Solo' }],
+    });
+    const after = await prisma.chapter.findMany({
+      where: { mediaFileId },
+      orderBy: { index: 'asc' },
+    });
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ index: 0, title: 'Solo' });
+
+    // A probe with no chapters clears them.
+    await persistProbe(mediaFileId, { ...movieProbe(), chapters: [] });
+    expect(await prisma.chapter.count({ where: { mediaFileId } })).toBe(0);
   });
 
   it('nulls video fields when the probe has no real video stream', async () => {
@@ -294,6 +328,7 @@ describe('persistProbe', () => {
           isForced: false,
         },
       ],
+      chapters: [],
     };
     await persistProbe(mediaFileId, audioOnly);
 

@@ -22,7 +22,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { disconnectPrisma, getPrisma } from '../db/client.js';
 import { probeFile } from '../media/ffprobe.js';
-import { scanLibrary, toSortTitle, type ProbeFn, type ScanStats } from './scan.js';
+import {
+  scanLibrary,
+  toSortTitle,
+  type ProbeFn,
+  type ScanStats,
+  type TrickplayScanFile,
+  type TrickplayScanHook,
+} from './scan.js';
 
 // End-to-end scanner tests against a real temporary SQLite database and a
 // real fixture tree of tiny videos generated with ffmpeg (same approach as
@@ -449,5 +456,49 @@ describe('roots and failure modes', () => {
 
   it('rejects an unknown library id', async () => {
     await expect(scan('no-such-library')).rejects.toThrow(/not found/);
+  });
+});
+
+describe('trickplay pre-warm hook', () => {
+  it('invokes the hook once per newly added file, with the probed dimensions', async () => {
+    const root = path.join(mediaRoot, 'prewarm-hit');
+    await mkdir(root, { recursive: true });
+    const filePath = path.join(root, 'Prewarm Movie (2021).mkv');
+    await copyFile(videoMaster, filePath);
+    const libraryId = await createLibrary('Prewarm Movies', 'movies', [root]);
+
+    const calls: TrickplayScanFile[] = [];
+    const trickplay: TrickplayScanHook = async (file) => {
+      calls.push(file);
+    };
+    const stats = await scanLibrary(libraryId, { mediaRoots: [mediaRoot], trickplay });
+
+    expect(stats.filesAdded).toBe(1);
+    expect(calls).toHaveLength(1);
+    // Dimensions come from the master fixture (320x240); the id is a real row.
+    expect(calls[0]).toMatchObject({ path: filePath, width: 320, height: 240 });
+    const file = await prisma.mediaFile.findUnique({ where: { id: calls[0]!.id } });
+    expect(file).not.toBeNull();
+
+    // A re-scan with the file unchanged adds nothing, so the hook is not called.
+    calls.length = 0;
+    const rescan = await scanLibrary(libraryId, { mediaRoots: [mediaRoot], trickplay });
+    expect(rescan.filesUnchanged).toBe(1);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('never lets a hook failure fail the scan', async () => {
+    const root = path.join(mediaRoot, 'prewarm-fail');
+    await mkdir(root, { recursive: true });
+    await copyFile(videoMaster, path.join(root, 'Boom (2020).mkv'));
+    const libraryId = await createLibrary('Prewarm Fail', 'movies', [root]);
+
+    const trickplay: TrickplayScanHook = async () => {
+      throw new Error('boom');
+    };
+    const stats = await scanLibrary(libraryId, { mediaRoots: [mediaRoot], trickplay });
+
+    expect(stats.filesAdded).toBe(1);
+    expect(stats.errors).toEqual([]);
   });
 });
