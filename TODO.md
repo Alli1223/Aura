@@ -65,7 +65,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **home-screen** — Home: Continue Watching, Recently Added per permitted library, On Deck (next unwatched episode)
 - [x] **search** — Server search endpoint + UI (title/people/genre) scoped to permitted libraries; instant results dropdown + full results page
 - [x] **admin-dashboard** — Admin area: user management UI, library management UI, **library access grant matrix (user × library)**, server settings, scan triggers & status
-- [ ] **activity-dashboard** — Admin view of active playback/transcode sessions (who/what/bandwidth/transcode reason) with kill-session action
+- [x] **activity-dashboard** — Admin view of active playback/transcode sessions (who/what/bandwidth/transcode reason) with kill-session action
 - [ ] **user-settings** — Profile page: change password, playback preferences (default quality, subtitle language, autoplay)
 
 ## Phase 5 — Plex-Parity Extras
