@@ -79,6 +79,7 @@ interface SettingsBody {
     defaultQuality: string;
     maxQuality: string;
     blockUnratedForRestrictedUsers: boolean;
+    hwAccel: string;
     tmdbApiKey: string;
   };
 }
@@ -143,6 +144,7 @@ describe('settings service', () => {
       defaultQuality: '720p',
       maxQuality: '1080p',
       blockUnratedForRestrictedUsers: false,
+      hwAccel: 'none',
       tmdbApiKey: '',
     });
   });
@@ -278,6 +280,7 @@ describe('GET /api/settings', () => {
       defaultQuality: '720p',
       maxQuality: '1080p',
       blockUnratedForRestrictedUsers: false,
+      hwAccel: 'none',
       tmdbApiKey: '',
     });
   });
@@ -317,6 +320,7 @@ describe('PATCH /api/settings', () => {
       defaultQuality: '720p',
       maxQuality: '1080p',
       blockUnratedForRestrictedUsers: false,
+      hwAccel: 'none',
       tmdbApiKey: '',
     });
 
@@ -346,6 +350,7 @@ describe('PATCH /api/settings', () => {
         defaultQuality: '720p',
         maxQuality: '1080p',
         blockUnratedForRestrictedUsers: false,
+        hwAccel: 'none',
         tmdbApiKey: '',
       });
     } finally {
@@ -382,6 +387,8 @@ describe('PATCH /api/settings', () => {
     ['a non-ladder defaultQuality', { defaultQuality: '4k' }],
     ['a non-ladder maxQuality', { maxQuality: 'ultra' }],
     ['a numeric defaultQuality', { defaultQuality: 720 }],
+    ['an unknown hwAccel mode', { hwAccel: 'gpu' }],
+    ['a non-string hwAccel', { hwAccel: true }],
     ['an unknown key', { serverName: 'ok', accentColor: 'red' }],
     ['an empty patch', {}],
     ['a baseUrl with a trailing slash', { baseUrl: 'https://media.example.com/' }],
@@ -435,6 +442,32 @@ describe('quality settings', () => {
       expect(response.statusCode, JSON.stringify(payload)).toBe(400);
       expect(response.json<ErrorBody>().error.code).toBe('VALIDATION');
     }
+  });
+});
+
+describe('hwAccel setting', () => {
+  it.each(['none', 'auto', 'vaapi', 'nvenc', 'qsv'])(
+    'admins can set hwAccel to %s and it round-trips',
+    async (mode) => {
+      const response = await patchSettings({ hwAccel: mode }, adminToken);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json<SettingsBody>().settings.hwAccel).toBe(mode);
+      expect(await getSetting('hwAccel')).toBe(mode);
+
+      // Restore the safe default for later tests.
+      expect((await patchSettings({ hwAccel: 'none' }, adminToken)).statusCode).toBe(200);
+    },
+  );
+
+  it('is never exposed via the public settings endpoint', async () => {
+    await patchSettings({ hwAccel: 'vaapi' }, adminToken);
+    const response = await inject({ method: 'GET', url: '/api/settings/public' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty('hwAccel');
+
+    await patchSettings({ hwAccel: 'none' }, adminToken);
   });
 });
 

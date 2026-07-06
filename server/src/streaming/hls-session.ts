@@ -6,6 +6,13 @@ import path from 'node:path';
 import type { FastifyBaseLogger } from 'fastify';
 
 import { resolveMediaFileForServing } from '../lib/media-roots.js';
+import {
+  buildEncoderPlan,
+  DEFAULT_HW_ACCEL,
+  DEFAULT_HWACCEL_DEVICE,
+  isHwAccelError,
+  type HwAccelMode,
+} from './hw-accel.js';
 import { QUALITIES, type HlsQuality, type HlsQualityName } from './quality-ladder.js';
 
 // The quality ladder now lives in quality-ladder.ts (the single source of truth
@@ -26,6 +33,22 @@ export {
   type HlsQualityName,
   type QualityRung,
 } from './quality-ladder.js';
+
+// Hardware-acceleration surface (hw-accel roadmap item). Re-exported so the
+// encoder-selection primitives are reachable from hls-session's public API for
+// callers and tests that already depend on this module.
+export {
+  HW_ACCEL_MODES,
+  DEFAULT_HW_ACCEL,
+  DEFAULT_HWACCEL_DEVICE,
+  buildEncoderPlan,
+  isHwAccelMode,
+  isHwAccelError,
+  hwAccelModeSchema,
+  type HwAccelMode,
+  type EncoderFamily,
+  type EncoderPlan,
+} from './hw-accel.js';
 
 // ffmpeg HLS transcoding session manager.
 //
@@ -198,13 +221,26 @@ export interface BuildHlsArgsParams {
   /** Segment length in seconds. Defaults to DEFAULT_HLS_SEGMENT_SECONDS. */
   segmentSeconds?: number;
   /**
-   * Video encoder. Defaults to software libx264. The hw-accel roadmap item
-   * slots a hardware encoder (e.g. h264_vaapi) in here without touching the
-   * rest of the pipeline.
+   * Explicit video encoder override for `-c:v`. When set it wins over whatever
+   * encoder the acceleration mode would pick (kept for flexibility / existing
+   * callers). Normally left unset so `hwAccel` selects the encoder.
    */
   videoEncoder?: string;
-  /** x264 preset. Defaults to "veryfast" (good speed/quality for live HLS). */
+  /** x264 preset for the SOFTWARE path. Defaults to "veryfast". */
   preset?: string;
+  /**
+   * Hardware-acceleration mode (hw-accel roadmap item). Defaults to `none`
+   * (software libx264 — byte-for-byte the historical output). A hardware mode
+   * emits the matching `-hwaccel*` input flags, hardware encoder and GPU scale
+   * filter. A burn-in request always forces this back to software (see
+   * buildEncoderPlan). The mode selection is the pure, unit-tested core.
+   */
+  hwAccel?: HwAccelMode;
+  /**
+   * DRM render node for VAAPI/QSV. Defaults to DEFAULT_HWACCEL_DEVICE. Ignored
+   * by the software and NVENC/CUDA paths.
+   */
+  hwAccelDevice?: string;
   /**
    * Input seek offset in seconds (transcode-seek). When > 0 and finite, emits
    * `-ss <offset>` BEFORE `-i` so ffmpeg fast-seeks into the source and decoding
@@ -263,8 +299,25 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
     params.segmentSeconds !== undefined && params.segmentSeconds > 0
       ? params.segmentSeconds
       : DEFAULT_HLS_SEGMENT_SECONDS;
-  const videoEncoder = params.videoEncoder ?? 'libx264';
   const preset = params.preset ?? 'veryfast';
+  const burn = params.burnSubtitle;
+
+  // Encoder selection (hw-accel): the pure plan maps (mode, device) -> encoder
+  // + `-hwaccel*` input flags + codec args + scale filter. A burn-in forces the
+  // software path (compositing across GPU surfaces is not implemented), so the
+  // proven -filter_complex path below is always reached in software. `none`
+  // yields the historical libx264 pipeline byte-for-byte.
+  const plan = buildEncoderPlan(
+    params.hwAccel ?? DEFAULT_HW_ACCEL,
+    params.hwAccelDevice ?? DEFAULT_HWACCEL_DEVICE,
+    {
+      hasBurnIn: burn !== undefined,
+      softwarePreset: preset,
+      softwareEncoder: params.videoEncoder,
+    },
+  );
+  // An explicit encoder override still wins for `-c:v` (existing behaviour).
+  const videoEncoder = params.videoEncoder ?? plan.videoEncoder;
 
   // Transcode-seek: a positive, finite offset becomes a fast input seek placed
   // BEFORE -i (so ffmpeg seeks the input rather than decoding-then-discarding).
@@ -277,8 +330,7 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   const playlistPath = path.join(outputDir, HLS_PLAYLIST_NAME);
   const segmentPath = path.join(outputDir, HLS_SEGMENT_PATTERN);
 
-  const scaleExpr = `scale='min(iw,${quality.maxWidth})':-2`;
-  const burn = params.burnSubtitle;
+  const scaleExpr = plan.scaleFilter(quality.maxWidth);
   // Video mapping + filter differ only for a burn-in: the subtitle is
   // composited then scaled inside a -filter_complex whose [v] output is mapped
   // in place of the raw video stream. Without a burn-in this is the original
@@ -294,6 +346,10 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
   return [
     '-nostdin',
     '-loglevel', 'error',
+    // Hardware-acceleration input flags (empty for software) select the device
+    // and keep decoded frames on the GPU. They are input options, so they must
+    // precede -i (and the -ss fast seek, which is also an input option).
+    ...plan.hwaccelArgs,
     // -ss BEFORE -i is an input option: fast seek into the source. Must precede
     // -i so it applies to the next input.
     ...seekArgs,
@@ -305,9 +361,10 @@ export function buildHlsFfmpegArgs(params: BuildHlsArgsParams): string[] {
     '-map', `0:a:${audioIndex}?`,
     ...subtitleDrop,
     '-c:v', videoEncoder,
-    '-preset', preset,
-    '-profile:v', 'high',
-    '-pix_fmt', 'yuv420p',
+    // Codec args: software keeps `-preset .. -profile:v high -pix_fmt yuv420p`;
+    // hardware encoders keep `-profile:v high` (pixel format follows the GPU
+    // surface; presets are vendor-specific so the encoder default is used).
+    ...plan.videoCodecArgs,
     ...videoFilter,
     '-b:v', quality.videoBitrate,
     '-maxrate', quality.maxrate,
@@ -524,9 +581,24 @@ export interface HlsSessionManagerOptions {
   segmentSeconds?: number;
   /** How often the idle reaper runs. Defaults to min(idleMs, 15s). */
   reaperIntervalMs?: number;
+  /**
+   * Resolves the hardware-acceleration mode (settings.hwAccel) at start time.
+   * Defaults to `none` (software). Read per-session so an admin can change it
+   * without restarting. A hardware mode is attempted first and automatically
+   * falls back to software on a hardware/device failure (see startSession).
+   */
+  getHwAccel?: () => Promise<HwAccelMode> | HwAccelMode;
+  /** DRM render node for VAAPI/QSV. Defaults to DEFAULT_HWACCEL_DEVICE. */
+  hwAccelDevice?: string;
   logger?: FastifyBaseLogger;
   /** Clock injection for deterministic tests. */
   now?: () => number;
+  /**
+   * Process spawner (seam for tests). Defaults to node's `spawn`. Injected in
+   * unit tests to simulate a hardware failure followed by a software success
+   * without a real GPU or ffmpeg.
+   */
+  spawnFn?: typeof spawn;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +648,9 @@ export class HlsSessionManager {
   private readonly readinessTimeoutMs: number;
   private readonly killGraceMs: number;
   private readonly segmentSeconds: number;
+  private readonly getHwAccel: () => Promise<HwAccelMode> | HwAccelMode;
+  private readonly hwAccelDevice: string;
+  private readonly spawnFn: typeof spawn;
   private readonly logger: FastifyBaseLogger | undefined;
   private readonly now: () => number;
   private readonly reaperInterval: NodeJS.Timeout;
@@ -591,6 +666,9 @@ export class HlsSessionManager {
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
     this.killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     this.segmentSeconds = options.segmentSeconds ?? DEFAULT_HLS_SEGMENT_SECONDS;
+    this.getHwAccel = options.getHwAccel ?? (() => DEFAULT_HW_ACCEL);
+    this.hwAccelDevice = options.hwAccelDevice ?? DEFAULT_HWACCEL_DEVICE;
+    this.spawnFn = options.spawnFn ?? spawn;
     this.logger = options.logger;
     this.now = options.now ?? Date.now;
 
@@ -738,19 +816,30 @@ export class HlsSessionManager {
     const outputDir = path.join(transcodeDir, id);
     await mkdir(outputDir, { recursive: true });
 
-    const args = buildHlsFfmpegArgs({
-      inputPath,
-      quality: this.qualities[quality],
-      outputDir,
-      segmentSeconds: this.segmentSeconds,
-      audioStreamIndex: resolvedAudioIndex,
-      downmixStereo: resolvedDownmix,
-      sourceChannels: audioChannels,
-      startOffsetSec: grantedOffsetSec,
-      burnSubtitle: burnSpec,
-    });
-    const child = spawn(this.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    trackChild(child);
+    // Encoder selection (hw-accel): read the mode per-session so an admin can
+    // change it live. A hardware mode is ATTEMPTED first, then automatically
+    // falls back to software on a hardware/device failure (see runStart). A
+    // burn-in always transcodes in software (buildEncoderPlan enforces this), so
+    // there is nothing to fall back FROM — the hardware attempt is skipped.
+    const requestedHwAccel = await this.getHwAccel();
+    const attemptHw = requestedHwAccel !== 'none' && burnSpec === undefined;
+    const buildArgs = (hwAccel: HwAccelMode): string[] =>
+      buildHlsFfmpegArgs({
+        inputPath,
+        quality: this.qualities[quality],
+        outputDir,
+        segmentSeconds: this.segmentSeconds,
+        audioStreamIndex: resolvedAudioIndex,
+        downmixStereo: resolvedDownmix,
+        sourceChannels: audioChannels,
+        startOffsetSec: grantedOffsetSec,
+        burnSubtitle: burnSpec,
+        hwAccel,
+        hwAccelDevice: this.hwAccelDevice,
+      });
+
+    const firstMode: HwAccelMode = attemptHw ? requestedHwAccel : 'none';
+    const child = this.spawnFfmpeg(buildArgs(firstMode));
 
     const nowMs = this.now();
     const session: InternalSession = {
@@ -776,18 +865,96 @@ export class HlsSessionManager {
     this.sessions.set(id, session);
     this.byKey.set(dedupKey, id);
 
+    session.ready = this.runStart(session, attemptHw, buildArgs);
+    await session.ready;
+    return session;
+  }
+
+  /**
+   * Orchestrates a session start with automatic software fallback: awaits the
+   * first attempt's readiness, and — only when that attempt was HARDWARE and it
+   * failed with a hardware/device error — retries ONCE with software args. A
+   * non-hardware failure (bad input, codec error) is finalised immediately and
+   * never retried, so no failure can loop. On success `session.process` is the
+   * live ffmpeg; on final failure the session is cleaned up and the error is
+   * rethrown for startSession's caller.
+   */
+  private async runStart(
+    session: InternalSession,
+    attemptHw: boolean,
+    buildArgs: (hwAccel: HwAccelMode) => string[],
+  ): Promise<void> {
+    try {
+      await this.beginAttempt(session);
+      return;
+    } catch (err) {
+      const stderr = err instanceof HlsStartError ? err.stderr : undefined;
+      // No hardware attempt, or a non-hardware failure, or the session was
+      // stopped mid-start: finalise without retrying.
+      if (!attemptHw || this.stopped || session.state === 'stopped' || !isHwAccelError(stderr)) {
+        throw await this.finalizeStartFailure(session, err);
+      }
+      this.logger?.warn(
+        { sessionId: session.id, err },
+        'hardware transcode failed; falling back to software encoding',
+      );
+    }
+
+    // Software fallback: clear any partial hardware output, then re-spawn with
+    // software args on the SAME session id / scratch dir.
+    await this.resetOutputDir(session);
+    session.stderrTail = '';
+    session.process = this.spawnFfmpeg(buildArgs('none'));
+    try {
+      await this.beginAttempt(session);
+    } catch (err) {
+      throw await this.finalizeStartFailure(session, err);
+    }
+  }
+
+  /** Spawns ffmpeg (via the injectable spawner) and tracks the child. */
+  private spawnFfmpeg(args: string[]): ChildProcess {
+    const child = this.spawnFn(this.ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    trackChild(child);
+    return child;
+  }
+
+  /**
+   * Wires the current `session.process` (stderr capture + exit/error handlers,
+   * each guarded by child identity so a superseded attempt's late events are
+   * ignored) and returns a promise that resolves once the playlist is
+   * serviceable or rejects with an HlsStartError. Does NOT clean up on failure —
+   * runStart decides whether to retry or finalise.
+   */
+  private beginAttempt(session: InternalSession): Promise<void> {
+    const child = session.process;
+    session.processAlive = true;
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
       session.stderrTail = (session.stderrTail + chunk).slice(-STDERR_TAIL_LENGTH);
     });
-    child.on('error', (err) => this.onChildError(session, err));
+    child.on('error', (err) => this.onChildError(session, child, err));
     child.on('exit', (code, signal) => {
-      void this.onChildExit(session, code, signal);
+      void this.onChildExit(session, child, code, signal);
     });
+    return this.awaitReadiness(session);
+  }
 
-    session.ready = this.awaitReadiness(session);
-    await session.ready;
-    return session;
+  /** Finalises a failed start: marks the session errored and cleans it up. */
+  private async finalizeStartFailure(session: InternalSession, err: unknown): Promise<Error> {
+    if (session.state !== 'stopped') session.state = 'error';
+    await this.cleanupSession(session);
+    return err instanceof Error ? err : new HlsStartError(String(err));
+  }
+
+  /** Empties the session scratch dir so a fallback attempt starts clean. */
+  private async resetOutputDir(session: InternalSession): Promise<void> {
+    try {
+      await rm(session.outputDir, { recursive: true, force: true });
+    } catch (err) {
+      this.logger?.debug({ err, sessionId: session.id }, 'failed to reset HLS scratch dir');
+    }
+    await mkdir(session.outputDir, { recursive: true });
   }
 
   /**
@@ -869,13 +1036,17 @@ export class HlsSessionManager {
 
       session.readinessTimeout = setTimeout(() => {
         if (session.state !== 'starting') return;
-        session.state = 'error';
+        // Reject the attempt and kill the stalled ffmpeg, but leave the session
+        // in 'starting' and DON'T clean up: runStart decides whether to fall
+        // back to software or finalise (a superseded attempt's child is killed
+        // here; its scratch dir is either reused by the retry or removed by the
+        // final cleanup).
         const err = new HlsStartError(
           `HLS transcode did not produce a playlist within ${this.readinessTimeoutMs}ms`,
           { stderr: session.stderrTail },
         );
         this.settleReject(session, err);
-        void this.killProcess(session).then(() => this.cleanupSession(session));
+        void this.killProcess(session);
       }, this.readinessTimeoutMs);
       session.readinessTimeout.unref();
 
@@ -909,28 +1080,33 @@ export class HlsSessionManager {
     }
   }
 
-  private onChildError(session: InternalSession, err: Error): void {
-    session.processAlive = false;
-    untrackChild(session.process);
+  private onChildError(session: InternalSession, child: ChildProcess, err: Error): void {
+    untrackChild(child);
     this.logger?.debug({ err, sessionId: session.id }, 'ffmpeg process error');
+    // Ignore a superseded attempt's late error (its child was replaced by the
+    // software fallback's child).
+    if (child !== session.process) return;
+    session.processAlive = false;
     if (session.state === 'starting') {
-      session.state = 'error';
-      this.clearReadinessTimers(session);
+      // Reject the attempt; runStart finalises or falls back (no cleanup here).
       this.settleReject(
         session,
         new HlsStartError(`ffmpeg failed to start: ${err.message}`, { stderr: session.stderrTail }),
       );
-      void this.cleanupSession(session);
     }
   }
 
   private async onChildExit(
     session: InternalSession,
+    child: ChildProcess,
     code: number | null,
     signal: NodeJS.Signals | null,
   ): Promise<void> {
+    untrackChild(child);
+    // Ignore a superseded attempt's exit (e.g. the killed hardware child after
+    // the session moved on to the software fallback child).
+    if (child !== session.process) return;
     session.processAlive = false;
-    untrackChild(session.process);
 
     if (session.state !== 'starting') {
       // Already ready (VOD finished — files stay on disk, serviceable until
@@ -946,7 +1122,8 @@ export class HlsSessionManager {
       this.settleResolve(session);
       return;
     }
-    session.state = 'error';
+    // Reject the attempt; runStart decides whether to retry in software or
+    // finalise (so a failed HARDWARE attempt can fall back rather than error).
     this.settleReject(
       session,
       new HlsStartError(
@@ -954,7 +1131,6 @@ export class HlsSessionManager {
         { stderr: session.stderrTail, exitCode: code },
       ),
     );
-    await this.cleanupSession(session);
   }
 
   private settleResolve(session: InternalSession): void {

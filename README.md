@@ -46,6 +46,50 @@ media mounts are read-only, and the container reports its own health via
 `/api/health`. Database migrations run automatically on container start
 (`prisma migrate deploy`), so upgrades need no manual migration step.
 
+## Hardware acceleration
+
+By default Aura transcodes in **software** (libx264) — it works everywhere and
+needs no special host setup. That is the safe default and is all most setups
+need.
+
+If your host has a supported GPU you can offload transcoding to it. Set the
+**Hardware acceleration** mode in Admin → Settings (`hwAccel`), which accepts:
+
+| Mode    | Encoder       | Host GPU                     |
+| ------- | ------------- | ---------------------------- |
+| `none`  | libx264 (CPU) | — (default, always works)    |
+| `vaapi` | `h264_vaapi`  | Intel / AMD (VA-API)         |
+| `nvenc` | `h264_nvenc`  | NVIDIA (NVENC / CUDA)        |
+| `qsv`   | `h264_qsv`    | Intel Quick Sync             |
+| `auto`  | VAAPI-first   | prefers VAAPI, else software |
+
+Enabling a hardware mode only takes effect once the GPU is **passed into the
+container**. The relevant blocks are commented out in `docker-compose.yml`:
+
+- **Intel/AMD (VAAPI) or Intel (QSV)** — pass the DRM render node:
+
+  ```yaml
+  devices:
+    - /dev/dri:/dev/dri
+  ```
+
+  The default device is `/dev/dri/renderD128`; override it with the
+  `HWACCEL_DEVICE` environment variable if your render node differs. (NVENC
+  ignores this — CUDA selects the GPU by index.)
+
+- **NVIDIA (NVENC)** — install the [NVIDIA Container
+  Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  on the host, then request the GPU via the `deploy.resources` block shown in
+  `docker-compose.yml` (no `/dev/dri` mount is needed).
+
+**Safety net:** hardware transcoding **automatically falls back to software**
+whenever the selected device is missing or the driver rejects the pipeline, so a
+wrong setting degrades gracefully instead of breaking playback. Burned-in
+image subtitles (PGS/VOBSUB/DVB) always transcode in software regardless of the
+mode. Because CI has no GPU, the hardware encoder arguments are verified at the
+argument level and the fallback is unit-tested — the encode itself is not run in
+CI.
+
 ## Development
 
 - `server/` — Fastify + TypeScript + Prisma (SQLite) API, ffmpeg transcoding

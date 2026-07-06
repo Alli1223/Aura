@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { loadConfig } from '../config.js';
 import { getPrisma } from '../db/client.js';
+import { DEFAULT_HW_ACCEL, hwAccelModeSchema, type HwAccelMode } from '../streaming/hw-accel.js';
 import {
   DEFAULT_MAX_QUALITY,
   DEFAULT_QUALITY,
@@ -47,6 +48,15 @@ export interface Settings {
    * affected. See src/lib/content-rating.ts.
    */
   blockUnratedForRestrictedUsers: boolean;
+  /**
+   * Hardware-accelerated transcoding mode (hw-accel). One of
+   * none|auto|vaapi|nvenc|qsv. Defaults to `none` (software libx264 — the
+   * universally-safe path). A hardware mode is attempted per transcode and
+   * automatically falls back to software on a hardware/device failure, so
+   * enabling it can never break playback. Requires the GPU device to be passed
+   * into the container (see docker-compose.yml / README "Hardware acceleration").
+   */
+  hwAccel: HwAccelMode;
   /**
    * TMDB credential for metadata enrichment ("" = unset/disabled): either a
    * v3 API key or a v4 read access token (a JWT starting with "eyJ"); the
@@ -93,6 +103,7 @@ const transcodeDirSchema = z
 
 const defaultQualitySchema = qualityNameSchema;
 const maxQualitySchema = qualityNameSchema;
+const hwAccelSchema = hwAccelModeSchema;
 
 const blockUnratedForRestrictedUsersSchema = z.boolean(
   'blockUnratedForRestrictedUsers must be a boolean',
@@ -123,6 +134,7 @@ const registry: { [K in SettingKey]: SettingDefinition<Settings[K]> } = {
     schema: blockUnratedForRestrictedUsersSchema,
     defaultValue: () => false,
   },
+  hwAccel: { schema: hwAccelSchema, defaultValue: () => DEFAULT_HW_ACCEL },
   tmdbApiKey: { schema: tmdbApiKeySchema, defaultValue: () => '' },
 };
 
@@ -150,6 +162,7 @@ export const settingsPatchSchema = z
     defaultQuality: defaultQualitySchema,
     maxQuality: maxQualitySchema,
     blockUnratedForRestrictedUsers: blockUnratedForRestrictedUsersSchema,
+    hwAccel: hwAccelSchema,
     tmdbApiKey: tmdbApiKeySchema,
   })
   .partial()

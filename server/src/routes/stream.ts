@@ -342,6 +342,11 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
     ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
     idleMs: opts.config.HLS_SESSION_IDLE_MS,
     maxSessions: opts.config.HLS_MAX_SESSIONS,
+    // Hardware acceleration (hw-accel): read the mode per-session so an admin
+    // toggle takes effect without a restart; a hardware failure auto-falls back
+    // to software inside the manager. The device node comes from config.
+    getHwAccel: () => getSetting('hwAccel', app.log),
+    hwAccelDevice: opts.config.HWACCEL_DEVICE,
     logger: app.log,
   });
   app.addHook('onClose', async () => {

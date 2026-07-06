@@ -155,6 +155,15 @@ const envSchema = z
      */
     HLS_MAX_SESSIONS: z.coerce.number().int().min(1).max(64).default(3),
     /**
+     * DRM render node passed to the VAAPI/QSV hardware transcoders when the
+     * `hwAccel` setting selects one (`-hwaccel_device`). Ignored by software and
+     * by the NVENC/CUDA path (CUDA selects its GPU by index). Only takes effect
+     * once the device is passed into the container (see docker-compose.yml) and
+     * an admin enables hardware acceleration; the transcoder auto-falls back to
+     * software if the device is missing or unusable.
+     */
+    HWACCEL_DEVICE: z.string().min(1).default('/dev/dri/renderD128'),
+    /**
      * Master switch for the filesystem library watcher (near-realtime rescans
      * on media changes). Defaults to enabled, except under NODE_ENV=test where
      * it defaults to disabled so the suite never spawns real chokidar watchers
