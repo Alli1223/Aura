@@ -11,6 +11,7 @@ import { NotFoundPage } from '../pages/NotFoundPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SearchPage } from '../pages/SearchPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { ActivitySection } from '../pages/admin/ActivitySection';
 import { AdminAccessPage } from '../pages/admin/AdminAccessPage';
 import { AdminLayout } from '../pages/admin/AdminLayout';
 import { AdminLibrariesPage } from '../pages/admin/AdminLibrariesPage';
@@ -62,6 +63,7 @@ export function AppRoutes() {
                 <Route path="access" element={<AdminAccessPage />} />
                 <Route path="settings" element={<AdminSettingsPage />} />
                 <Route path="tasks" element={<AdminTasksPage />} />
+                <Route path="activity" element={<ActivitySection />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundPage />} />

@@ -490,6 +490,28 @@ export interface HlsSession {
   readonly state: HlsSessionState;
 }
 
+/**
+ * A read-only, serialisable snapshot of one live transcode session, for the
+ * admin activity dashboard (activity-dashboard roadmap item). Deliberately a
+ * strict subset of {@link HlsSession}: it carries ONLY display/identity fields
+ * and NEVER the ffmpeg child process, its stderr, the input path or the scratch
+ * dir — nothing that leaks a process handle or a filesystem location. `createdAt`
+ * and `lastAccess` stay epoch-millisecond numbers (the route serialises them).
+ */
+export interface HlsSessionSnapshot {
+  readonly id: string;
+  readonly mediaFileId: string;
+  readonly userId: string;
+  readonly quality: HlsQualityName;
+  readonly audioTrackIndex: number;
+  readonly downmixStereo: boolean;
+  readonly startOffsetSec: number;
+  readonly burnSubtitleTrackId: string | undefined;
+  readonly createdAt: number;
+  readonly lastAccess: number;
+  readonly state: HlsSessionState;
+}
+
 interface InternalSession {
   id: string;
   mediaFileId: string;
@@ -698,6 +720,35 @@ export class HlsSessionManager {
     if (session === undefined) return undefined;
     if (session.state !== 'starting' && session.state !== 'ready') return undefined;
     return session;
+  }
+
+  /**
+   * A read-only snapshot of every live (starting/ready) session, for the admin
+   * activity dashboard. Each entry is a plain display/identity subset — no
+   * ffmpeg handle, stderr, input path or scratch dir is ever exposed (see
+   * {@link HlsSessionSnapshot}). Cheap: a single pass over the session map that
+   * copies primitive fields only. Stopped/errored sessions (mid-cleanup) are
+   * omitted so the list reflects only sessions actually holding resources.
+   */
+  listSessions(): HlsSessionSnapshot[] {
+    const snapshots: HlsSessionSnapshot[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.state !== 'starting' && session.state !== 'ready') continue;
+      snapshots.push({
+        id: session.id,
+        mediaFileId: session.mediaFileId,
+        userId: session.userId,
+        quality: session.quality,
+        audioTrackIndex: session.audioTrackIndex,
+        downmixStereo: session.downmixStereo,
+        startOffsetSec: session.startOffsetSec,
+        burnSubtitleTrackId: session.burnSubtitleTrackId,
+        createdAt: session.createdAt,
+        lastAccess: session.lastAccess,
+        state: session.state,
+      });
+    }
+    return snapshots;
   }
 
   /** Bumps lastAccess so the reaper does not kill an in-use session. */

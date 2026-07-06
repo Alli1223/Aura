@@ -9,6 +9,7 @@ const TABS = [
   { to: '/admin/access', label: 'Access', end: false },
   { to: '/admin/settings', label: 'Settings', end: false },
   { to: '/admin/tasks', label: 'Tasks', end: false },
+  { to: '/admin/activity', label: 'Activity', end: false },
 ];
 
 /** Admin shell: the "Admin" header, a section sub-nav and the routed section. */

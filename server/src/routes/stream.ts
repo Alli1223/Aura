@@ -52,6 +52,14 @@ export interface StreamRoutesOptions {
   config: Config;
   /** The dedicated streaming-token HMAC secret from secrets.json. */
   streamTokenSecret: string;
+  /**
+   * The shared HLS transcode session manager. Created once in buildApp and
+   * passed into BOTH the stream plugin (which starts/serves/stops sessions) and
+   * the admin activity plugin (which lists and kills them), so the two views
+   * operate over the same live set. Its lifecycle (shutdown on server close) is
+   * owned by buildApp, not this plugin.
+   */
+  hls: HlsSessionManager;
 }
 
 const tokenBodySchema = z.object({
@@ -334,24 +342,11 @@ export const streamRoutes: FastifyPluginAsync<StreamRoutesOptions> = async (app,
   // HLS transcoding
   // -------------------------------------------------------------------------
 
-  // One session manager for the server lifetime. Killed on server shutdown so
-  // no ffmpeg process or scratch dir leaks.
-  const hls = new HlsSessionManager({
-    mediaRoots: opts.config.MEDIA_ROOTS,
-    getTranscodeDir: () => getSetting('transcodeDir', app.log),
-    ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
-    idleMs: opts.config.HLS_SESSION_IDLE_MS,
-    maxSessions: opts.config.HLS_MAX_SESSIONS,
-    // Hardware acceleration (hw-accel): read the mode per-session so an admin
-    // toggle takes effect without a restart; a hardware failure auto-falls back
-    // to software inside the manager. The device node comes from config.
-    getHwAccel: () => getSetting('hwAccel', app.log),
-    hwAccelDevice: opts.config.HWACCEL_DEVICE,
-    logger: app.log,
-  });
-  app.addHook('onClose', async () => {
-    await hls.shutdown();
-  });
+  // The HLS session manager is created once in buildApp and shared with the
+  // admin activity plugin, so both operate over the same live session set. Its
+  // shutdown (killing every ffmpeg + scratch dir on server close) is wired in
+  // buildApp, not here.
+  const hls = opts.hls;
 
   /**
    * Shared front half of the HLS auth chain, identical in spirit to direct
