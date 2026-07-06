@@ -75,7 +75,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [ ] **chapters-trickplay** — Chapter markers from ffprobe + scrub-preview thumbnails (BIF-style sprite generation during scan)
 - [ ] **skip-markers** — Intro/credits skip buttons (chapter-based + configurable per-show offsets)
 - [ ] **multi-version** — Multiple files per movie (1080p/4K/Director's Cut): grouping, version picker in player
-- [ ] **parental-controls** — Content-rating restrictions per user (e.g. max PG-13), enforced server-side alongside library grants
+- [x] **parental-controls** — Content-rating restrictions per user (e.g. max PG-13), enforced server-side alongside library grants
 - [ ] **watch-history** — Full per-user watch history page + admin server-wide stats (most watched, storage per library)
 - [x] **scheduled-tasks** — Task scheduler: periodic scans, cache/transcode cleanup, DB backup to `/config/backups`; admin task status UI
 - [x] **notifications-webhooks** — Outbound webhooks on events (media added, playback started) + admin API to manage them: webhook store, HMAC-signed fire-and-forget dispatcher, event emission from the scanner & playback-decision, admin CRUD + test endpoint
