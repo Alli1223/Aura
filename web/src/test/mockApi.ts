@@ -13,6 +13,7 @@ import type {
   PlayerSubtitleTrack,
   QualitiesResponse,
 } from '../api/player';
+import type { TrickplayManifest } from '../api/trickplay';
 import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/types';
 
 /** Fixed token the mock server hands back so tests can assert bearer headers. */
@@ -249,6 +250,7 @@ export function makeFile(overrides: Partial<MediaFileInfo> = {}): MediaFileInfo 
     size: 4_000_000_000,
     audioStreams: [],
     subtitleStreams: [],
+    chapters: [],
     ...overrides,
   };
 }
@@ -334,6 +336,28 @@ export function makeAudioTrack(overrides: Partial<PlayerAudioTrack> = {}): Playe
   };
 }
 
+/** A trickplay manifest (mirrors the server media/trickplay.ts shape). */
+export function makeTrickplayManifest(
+  mediaFileId: string,
+  overrides: Partial<TrickplayManifest> = {},
+): TrickplayManifest {
+  return {
+    version: 1,
+    mediaFileId,
+    sourceSize: 1,
+    sourceMtimeMs: 1,
+    intervalSec: 10,
+    thumbWidth: 320,
+    thumbHeight: 180,
+    columns: 10,
+    rows: 10,
+    tilesPerSheet: 100,
+    thumbnailCount: 150,
+    sheets: ['sprite-0.jpg', 'sprite-1.jpg'],
+    ...overrides,
+  };
+}
+
 /** One subtitle track for GET /stream/subtitles. */
 export function makeSubtitleTrack(
   overrides: Partial<PlayerSubtitleTrack> = {},
@@ -397,6 +421,11 @@ export interface MockApiConfig {
   audioTracks?: Record<string, PlayerAudioTrack[]>;
   /** Subtitle tracks keyed by mediaFileId (GET /stream/subtitles). */
   subtitles?: Record<string, PlayerSubtitleTrack[]>;
+  /**
+   * Trickplay manifests keyed by mediaFileId (GET /stream/trickplay/:id/manifest).
+   * A file with no entry answers 404 (no scrub preview), like the real server.
+   */
+  trickplay?: Record<string, TrickplayManifest>;
 }
 
 export interface MockApi {
@@ -423,6 +452,7 @@ export interface MockApi {
     qualities: QualitiesResponse;
     audioTracks: Record<string, PlayerAudioTrack[]>;
     subtitles: Record<string, PlayerSubtitleTrack[]>;
+    trickplay: Record<string, TrickplayManifest>;
     /** Monotonic counter so each HLS start returns a distinct session id. */
     hlsSessionCounter: number;
   };
@@ -625,6 +655,7 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     qualities: config.qualities ?? makeQualities(),
     audioTracks: config.audioTracks ?? {},
     subtitles: config.subtitles ?? {},
+    trickplay: config.trickplay ?? {},
     hlsSessionCounter: 0,
   };
   const conflictTaskId = config.taskRunConflictId;
@@ -1175,6 +1206,16 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     if (subtitlesMatch !== null && method === 'GET') {
       const mediaFileId = decodeURIComponent(subtitlesMatch[1] ?? '');
       return { status: 200, body: { mediaFileId, tracks: state.subtitles[mediaFileId] ?? [] } };
+    }
+
+    // GET /api/stream/trickplay/:mediaFileId/manifest — scrub-preview tile map
+    // (token-authed). A file with no manifest cloaks to 404 (no preview).
+    const trickplayMatch = /^\/api\/stream\/trickplay\/([^/]+)\/manifest$/.exec(path);
+    if (trickplayMatch !== null && method === 'GET') {
+      const mediaFileId = decodeURIComponent(trickplayMatch[1] ?? '');
+      const manifest = state.trickplay[mediaFileId];
+      if (manifest === undefined) return { status: 404, body: err('NOT_FOUND', 'Not found') };
+      return { status: 200, body: manifest };
     }
 
     return { status: 404, body: err('NOT_FOUND', `No mock for ${method} ${path}`) };

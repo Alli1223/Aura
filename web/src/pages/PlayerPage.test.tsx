@@ -17,6 +17,7 @@ import {
   makeQualities,
   makeSubtitleTrack,
   makeTranscodeDecision,
+  makeTrickplayManifest,
   makeUser,
   type MockApi,
   type MockApiConfig,
@@ -102,7 +103,10 @@ beforeEach(() => {
   });
 });
 
-function setup(config: MockApiConfig, path: string): { api: MockApi; view: ReturnType<typeof renderApp> } {
+function setup(
+  config: MockApiConfig,
+  path: string,
+): { api: MockApi; view: ReturnType<typeof renderApp> } {
   const api = installMockApi({ session: makeUser({ username: 'alli' }), ...config });
   const view = renderApp([path]);
   return { api, view };
@@ -246,7 +250,12 @@ describe('PlayerPage — quality / audio / subtitles', () => {
         audioTracks: {
           'file-1': [
             makeAudioTrack({ index: 0, label: 'English Stereo (AAC)', default: true }),
-            makeAudioTrack({ index: 1, label: 'French Stereo (AAC)', language: 'fra', default: false }),
+            makeAudioTrack({
+              index: 1,
+              label: 'French Stereo (AAC)',
+              language: 'fra',
+              default: false,
+            }),
           ],
         },
       },
@@ -324,7 +333,9 @@ describe('PlayerPage — resume, progress & lifecycle', () => {
     });
     return {
       decisions: { 'file-1': makeDirectDecision('file-1') },
-      details: { 'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }) },
+      details: {
+        'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }),
+      },
     };
   };
 
@@ -355,7 +366,9 @@ describe('PlayerPage — resume, progress & lifecycle', () => {
     const { api, view } = setup(
       {
         decisions: { 'file-1': makeDirectDecision('file-1') },
-        details: { 'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }) },
+        details: {
+          'movie-1': makeDetail(item, { files: [makeFile({ id: 'file-1', durationMs: 120_000 })] }),
+        },
       },
       '/player/file-1?item=movie-1',
     );
@@ -468,7 +481,7 @@ describe('PlayerPage — session lifecycle robustness', () => {
 });
 
 describe('PlayerPage — user playback preferences', () => {
-  it('starts a transcode at the user\'s preferred quality', async () => {
+  it("starts a transcode at the user's preferred quality", async () => {
     const { api } = setup(
       {
         session: makeUser({ preferredQuality: '480p' }),
@@ -512,7 +525,12 @@ describe('PlayerPage — user playback preferences', () => {
         decisions: { 'file-1': makeDirectDecision('file-1') },
         subtitles: {
           'file-1': [
-            makeSubtitleTrack({ id: 'embedded-2', kind: 'text', language: 'eng', label: 'English' }),
+            makeSubtitleTrack({
+              id: 'embedded-2',
+              kind: 'text',
+              language: 'eng',
+              label: 'English',
+            }),
             makeSubtitleTrack({ id: 'embedded-3', kind: 'text', language: 'fra', label: 'French' }),
           ],
         },
@@ -544,7 +562,12 @@ describe('PlayerPage — user playback preferences', () => {
         decisions: { 'file-1': makeDirectDecision('file-1') },
         subtitles: {
           'file-1': [
-            makeSubtitleTrack({ id: 'embedded-2', kind: 'text', language: 'eng', label: 'English' }),
+            makeSubtitleTrack({
+              id: 'embedded-2',
+              kind: 'text',
+              language: 'eng',
+              label: 'English',
+            }),
           ],
         },
       },
@@ -617,5 +640,131 @@ describe('PlayerPage — keyboard shortcuts', () => {
 
     fireEvent.keyDown(window, { key: 'f' });
     expect(requestFullscreenSpy).toHaveBeenCalled();
+  });
+});
+
+describe('PlayerPage — trickplay scrub preview & chapter markers', () => {
+  /** Stubs an element's geometry so the hover math has a real bar width. */
+  const stubRect = (element: Element, width: number, left = 0): void => {
+    element.getBoundingClientRect = () =>
+      ({
+        left,
+        right: left + width,
+        width,
+        top: 0,
+        bottom: 20,
+        height: 20,
+        x: left,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+  };
+
+  /** A 1000s movie with a resolved duration so the seek bar has a scale. */
+  const movieWith = (
+    extra: Partial<MockApiConfig>,
+    fileOverrides: Parameters<typeof makeFile>[0] = {},
+  ): MockApiConfig => {
+    const item = makeItem({ id: 'movie-1', type: 'movie', title: 'Movie', runtimeMs: 1_000_000 });
+    return {
+      decisions: { 'file-1': makeDirectDecision('file-1') },
+      details: {
+        'movie-1': makeDetail(item, {
+          files: [makeFile({ id: 'file-1', durationMs: 1_000_000, ...fileOverrides })],
+        }),
+      },
+      ...extra,
+    };
+  };
+
+  it('shows a trickplay thumbnail on seek-bar hover and hides it on leave', async () => {
+    setup(
+      movieWith({ trickplay: { 'file-1': makeTrickplayManifest('file-1') } }),
+      '/player/file-1?item=movie-1',
+    );
+
+    const scrubBar = await screen.findByTestId('scrub-bar');
+    stubRect(scrubBar, 1000);
+
+    // No preview until the pointer moves over the bar.
+    expect(screen.queryByTestId('trickplay-preview')).not.toBeInTheDocument();
+
+    fireEvent.pointerMove(scrubBar, { clientX: 500 });
+
+    // 50% of a 1000s file => 8:20; a thumbnail is drawn for that hover time.
+    const preview = await screen.findByTestId('trickplay-preview');
+    expect(preview).toBeInTheDocument();
+    expect(screen.getByText('8:20')).toBeInTheDocument();
+    const thumb = screen.getByTestId('trickplay-thumb');
+    // t=500s => index 50 => sheet 0, col 0, row 5 => offset (0, -900).
+    expect(thumb.style.backgroundImage).toContain(
+      '/api/stream/trickplay/file-1/sprite-0.jpg?token=stream-token',
+    );
+    // A zero x-offset serialises as "0px" (browsers/jsdom normalise "-0px").
+    expect(thumb.style.backgroundPosition).toBe('0px -900px');
+
+    fireEvent.pointerLeave(scrubBar);
+    await waitFor(() => expect(screen.queryByTestId('trickplay-preview')).not.toBeInTheDocument());
+  });
+
+  it('renders one chapter tick per chapter at the right position with a title tooltip', async () => {
+    const chapters = [
+      { index: 0, startMs: 0, endMs: 300_000, title: 'Intro' },
+      { index: 1, startMs: 300_000, endMs: 600_000, title: 'The Heist' },
+      { index: 2, startMs: 600_000, endMs: 1_000_000, title: null },
+    ];
+    setup(movieWith({}, { chapters }), '/player/file-1?item=movie-1');
+
+    const markers = await screen.findAllByTestId('chapter-marker');
+    expect(markers).toHaveLength(3);
+    // startMs/durationMs: 300s of 1000s => 30% across the bar.
+    expect(markers[1]).toHaveStyle({ left: '30%' });
+    expect(markers[0]).toHaveAttribute('title', 'Intro');
+    expect(markers[1]).toHaveAttribute('title', 'The Heist');
+    // A titleless chapter falls back to its 1-based position.
+    expect(markers[2]).toHaveAttribute('title', 'Chapter 3');
+    expect(markers[0]).toHaveAttribute('aria-label', 'Jump to chapter: Intro');
+  });
+
+  it('seeks to the chapter start when a marker is clicked', async () => {
+    const chapters = [
+      { index: 0, startMs: 0, endMs: 300_000, title: 'Intro' },
+      { index: 1, startMs: 300_000, endMs: 600_000, title: 'The Heist' },
+    ];
+    setup(movieWith({}, { chapters }), '/player/file-1?item=movie-1');
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    const markers = await screen.findAllByTestId('chapter-marker');
+    fireEvent.click(markers[1]!);
+    // Direct play: seeking sets the element currentTime to the chapter start (300s).
+    expect(video.currentTime).toBe(300);
+  });
+
+  it('degrades gracefully with no trickplay: no preview, but the player still works', async () => {
+    // No `trickplay` entry → GET .../manifest answers 404 → null manifest.
+    const { api } = setup(movieWith({}), '/player/file-1?item=movie-1');
+
+    const scrubBar = await screen.findByTestId('scrub-bar');
+    stubRect(scrubBar, 1000);
+
+    // Let the manifest request resolve (to 404) before asserting no preview.
+    await waitFor(() =>
+      expect(
+        api.fetchMock.mock.calls.some(([url]) =>
+          String(url).includes('/api/stream/trickplay/file-1/manifest'),
+        ),
+      ).toBe(true),
+    );
+
+    fireEvent.pointerMove(scrubBar, { clientX: 500 });
+    expect(screen.queryByTestId('trickplay-preview')).not.toBeInTheDocument();
+
+    // The player itself is unaffected: the video and a working seek bar remain.
+    const video = screen.getByTestId('player-video') as HTMLVideoElement;
+    expect(video).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('slider', { name: 'Seek' }), { target: { value: '120' } });
+    expect(video.currentTime).toBe(120);
   });
 });

@@ -12,7 +12,7 @@ import {
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { ApiError } from '../api/client';
-import { useItemDetail } from '../api/detail';
+import { useItemDetail, type ChapterInfo } from '../api/detail';
 import {
   detectClientCapabilities,
   getAudioTracks,
@@ -37,6 +37,7 @@ import { formatTime } from '../components/player/format';
 import { PlayGlyph, ReplayGlyph } from '../components/player/PlayerIcons';
 import { Spinner } from '../components/Spinner';
 import { useAuth } from '../auth/context';
+import { useTrickplayManifest } from '../api/trickplay';
 import styles from './PlayerPage.module.css';
 
 // The hls.js player page, reached at `/player/:mediaFileId?item=:itemId`.
@@ -286,7 +287,10 @@ function usePlaybackEngine(params: EngineParams): PlaybackEngine {
   const [activeAudioIndex, setActiveAudioIndex] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const toSourceTime = useCallback((elementTime: number) => startOffsetRef.current + elementTime, []);
+  const toSourceTime = useCallback(
+    (elementTime: number) => startOffsetRef.current + elementTime,
+    [],
+  );
 
   const reportNow = useCallback(() => {
     const id = itemIdRef.current;
@@ -469,7 +473,10 @@ function usePlaybackEngine(params: EngineParams): PlaybackEngine {
       // Seeking outside the transcoded window: restart the session at the offset.
       setCurrentTimeSec(target);
       void startTranscode({
-        quality: activeQualityRef.current !== 'Original' ? activeQualityRef.current : defaultQualityRef.current,
+        quality:
+          activeQualityRef.current !== 'Original'
+            ? activeQualityRef.current
+            : defaultQualityRef.current,
         audioTrack: activeAudioRef.current ?? undefined,
         startOffset: target,
       });
@@ -846,6 +853,8 @@ interface StageProps {
   preferredSubtitleLanguage: string | null;
   /** Whether the next episode auto-advances when playback ends. */
   autoplayNextEpisode: boolean;
+  /** Chapter markers for the current file's timeline; empty when none. */
+  chapters: ChapterInfo[];
   nextQueue: PlayDescriptor[];
   onBack: () => void;
 }
@@ -877,6 +886,11 @@ function PlayerStage(props: StageProps) {
   });
 
   const token = props.decision.streamToken;
+
+  // Scrub-preview tile map (token-authed; null when the file has no trickplay,
+  // so the seek bar simply shows no hover thumbnail).
+  const trickplayQuery = useTrickplayManifest(props.mediaFileId, token);
+  const trickplay = trickplayQuery.data ?? null;
 
   // Audio + subtitle track listings (token-authed; enabled once we have a token).
   const audioQuery = useQuery({
@@ -1140,6 +1154,10 @@ function PlayerStage(props: StageProps) {
         activeSubtitleId={activeSubtitleId}
         onSelectSubtitle={(value) => setSubtitleChoice(value)}
         onActivity={showControls}
+        mediaFileId={props.mediaFileId}
+        streamToken={token}
+        trickplay={trickplay}
+        chapters={props.chapters}
       />
     </div>
   );
@@ -1197,6 +1215,7 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
   const decision = decisionQuery.data;
   const detail = detailQuery.data;
   const file = detail?.files.find((candidate) => candidate.id === mediaFileId) ?? detail?.files[0];
+  const chapters = file?.chapters ?? [];
   const durationMs = file?.durationMs ?? detail?.item.runtimeMs ?? null;
   const sourceDurationSec = durationMs !== null && durationMs > 0 ? durationMs / 1000 : 0;
   const watchState = detail?.item.watchState;
@@ -1209,7 +1228,8 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
   const serverDefaultQuality = qualitiesQuery.data?.defaultQuality ?? '720p';
   // Start at the user's preferred rung (clamped to the rungs they may select),
   // falling back to the server-chosen decision rung / server default.
-  const decisionFallback = decision.action === 'transcode' ? decision.quality : serverDefaultQuality;
+  const decisionFallback =
+    decision.action === 'transcode' ? decision.quality : serverDefaultQuality;
   const initialQuality = clampToPermitted(user?.preferredQuality, qualityRungs, decisionFallback);
 
   return (
@@ -1225,6 +1245,7 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
         qualityRungs={qualityRungs}
         preferredSubtitleLanguage={user?.preferredSubtitleLanguage ?? null}
         autoplayNextEpisode={user?.autoplayNextEpisode ?? true}
+        chapters={chapters}
         nextQueue={nextQueue}
         onBack={onBack}
       />

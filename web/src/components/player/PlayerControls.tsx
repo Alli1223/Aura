@@ -1,6 +1,16 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
+import type { ChapterInfo } from '../../api/detail';
+import type { TrickplayManifest } from '../../api/trickplay';
 import { formatTime } from './format';
+import { TrickplayPreview } from './TrickplayPreview';
 import {
   BackGlyph,
   FullscreenExitGlyph,
@@ -64,7 +74,23 @@ export interface PlayerControlsProps {
   onSelectSubtitle: (value: string | null) => void;
   /** Reset the auto-hide timer on any control interaction. */
   onActivity: () => void;
+  /** The playing file id + streaming token, for the trickplay sprite URLs. */
+  mediaFileId: string;
+  streamToken: string;
+  /** Scrub-preview tile map, or null when the file has no trickplay. */
+  trickplay: TrickplayManifest | null;
+  /** Chapter markers to tick on the timeline; empty when the file has none. */
+  chapters: ChapterInfo[];
 }
+
+/** A chapter's display title, falling back to its 1-based position. */
+function chapterLabel(chapter: ChapterInfo): string {
+  const title = chapter.title;
+  return title !== null && title !== '' ? title : `Chapter ${chapter.index + 1}`;
+}
+
+/** Leading-edge throttle window (ms) for the scrub hover preview. */
+const HOVER_THROTTLE_MS = 40;
 
 type Panel = 'root' | 'quality' | 'audio' | 'subtitles';
 
@@ -122,6 +148,64 @@ export function PlayerControls(props: PlayerControlsProps) {
   const scrubMax = duration > 0 ? duration : 1;
   const bufferedPercent = duration > 0 ? Math.min(100, (props.bufferedSec / duration) * 100) : 0;
 
+  // ---- Scrub hover preview -------------------------------------------------
+  // A throttled pointer track over the seek bar drives a floating thumbnail
+  // preview (when the file has trickplay). Geometry is read from the scrub
+  // wrapper via getBoundingClientRect, so it follows the real bar width.
+  const scrubWrapRef = useRef<HTMLDivElement | null>(null);
+  const [hoverTimeSec, setHoverTimeSec] = useState<number | null>(null);
+  const [hoverX, setHoverX] = useState(0);
+  const lastHoverAtRef = useRef(0);
+  const trailingRef = useRef<number | null>(null);
+
+  const applyHover = useCallback(
+    (clientX: number) => {
+      const wrap = scrubWrapRef.current;
+      if (wrap === null || duration <= 0) return;
+      const rect = wrap.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      setHoverX(fraction * rect.width);
+      setHoverTimeSec(fraction * duration);
+    },
+    [duration],
+  );
+
+  const onScrubPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const clientX = event.clientX;
+      const now = Date.now();
+      // Leading edge fires immediately; bursts within the window schedule a
+      // single trailing update so the preview settles on the final position.
+      if (now - lastHoverAtRef.current >= HOVER_THROTTLE_MS) {
+        lastHoverAtRef.current = now;
+        applyHover(clientX);
+        return;
+      }
+      if (trailingRef.current !== null) window.clearTimeout(trailingRef.current);
+      trailingRef.current = window.setTimeout(() => {
+        lastHoverAtRef.current = Date.now();
+        applyHover(clientX);
+      }, HOVER_THROTTLE_MS);
+    },
+    [applyHover],
+  );
+
+  const onScrubPointerLeave = useCallback(() => {
+    if (trailingRef.current !== null) {
+      window.clearTimeout(trailingRef.current);
+      trailingRef.current = null;
+    }
+    lastHoverAtRef.current = 0;
+    setHoverTimeSec(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (trailingRef.current !== null) window.clearTimeout(trailingRef.current);
+    };
+  }, []);
+
   const onScrub = (event: ChangeEvent<HTMLInputElement>) => {
     props.onActivity();
     props.onSeek(Number(event.target.value));
@@ -154,7 +238,13 @@ export function PlayerControls(props: PlayerControlsProps) {
       <div className={styles.bottomBar}>
         <div className={styles.scrubRow}>
           <span className={styles.time}>{formatTime(props.currentTimeSec)}</span>
-          <div className={styles.scrubWrap}>
+          <div
+            ref={scrubWrapRef}
+            className={styles.scrubWrap}
+            data-testid="scrub-bar"
+            onPointerMove={onScrubPointerMove}
+            onPointerLeave={onScrubPointerLeave}
+          >
             <div className={styles.scrubBuffered} style={{ width: `${bufferedPercent}%` }} />
             <input
               type="range"
@@ -167,6 +257,38 @@ export function PlayerControls(props: PlayerControlsProps) {
               aria-label="Seek"
               aria-valuetext={`${formatTime(props.currentTimeSec)} of ${formatTime(duration)}`}
             />
+            {/* Chapter ticks paint above the range track so their tooltip
+                shows and a click can jump to the chapter. */}
+            {duration > 0 &&
+              props.chapters.map((chapter) => {
+                const fraction = Math.min(1, Math.max(0, chapter.startMs / 1000 / duration));
+                const label = chapterLabel(chapter);
+                return (
+                  <button
+                    key={chapter.index}
+                    type="button"
+                    className={styles.chapterMarker}
+                    style={{ left: `${fraction * 100}%` }}
+                    data-testid="chapter-marker"
+                    title={label}
+                    aria-label={`Jump to chapter: ${label}`}
+                    onClick={() => {
+                      props.onActivity();
+                      props.onSeek(chapter.startMs / 1000);
+                    }}
+                  />
+                );
+              })}
+            {props.trickplay !== null && hoverTimeSec !== null && (
+              <div className={styles.previewAnchor} style={{ left: `${hoverX}px` }}>
+                <TrickplayPreview
+                  manifest={props.trickplay}
+                  mediaFileId={props.mediaFileId}
+                  token={props.streamToken}
+                  timeSec={hoverTimeSec}
+                />
+              </div>
+            )}
           </div>
           <span className={styles.time}>{formatTime(duration)}</span>
         </div>
