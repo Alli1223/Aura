@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
-import { getAccessibleLibraryIds } from '../auth/access.js';
+import { getAccessibleLibraryIds, resolveRatingFilter } from '../auth/access.js';
 import { sendError } from '../lib/errors.js';
 import { searchLibraryItems } from '../lib/media-query.js';
 
@@ -44,11 +44,13 @@ export const searchRoutes: FastifyPluginAsync = async (app) => {
 
     const trimmed = query.data.q.trim();
     const libraryIds = await getAccessibleLibraryIds(request.user);
+    const ratingFilter = await resolveRatingFilter(request.user);
     const results = await searchLibraryItems(
       request.user.id,
       libraryIds,
       trimmed,
       query.data.limit,
+      ratingFilter,
     );
     return { results, query: trimmed };
   });

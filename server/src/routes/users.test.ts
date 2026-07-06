@@ -36,6 +36,7 @@ interface PublicUser {
   isEnabled: boolean;
   mustChangePassword: boolean;
   maxQuality: string | null;
+  maxContentRating: string | null;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -310,6 +311,12 @@ describe('PATCH /api/users/:id', () => {
       { email: 'nope' },
       { maxQuality: '4k' },
       { maxQuality: 1080 },
+      // Content-rating caps are MPAA ladder names only: a TV rating, an
+      // unknown rating, wrong casing and a number are all rejected.
+      { maxContentRating: 'TV-MA' },
+      { maxContentRating: 'NR' },
+      { maxContentRating: 'pg-13' },
+      { maxContentRating: 5 },
     ]) {
       const response = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, payload);
       expect(response.statusCode, JSON.stringify(payload)).toBe(400);
@@ -355,6 +362,39 @@ describe('PATCH /api/users/:id', () => {
     const me = await api('GET', '/api/users/me', user.accessToken);
     expect(me.statusCode).toBe(200);
     expect(me.json<{ user: PublicUser }>().user.maxQuality).toBe('720p');
+  });
+
+  it('sets, then clears, a per-user maxContentRating cap (with audit) and serializes it', async () => {
+    const user = await registerUser();
+
+    // Fresh users have no parental-controls cap.
+    const initial = await api('GET', `/api/users/${user.id}`, admin.accessToken);
+    expect(initial.json<{ user: PublicUser }>().user.maxContentRating).toBeNull();
+
+    // Set a valid ladder cap.
+    const set = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, {
+      maxContentRating: 'PG-13',
+    });
+    expect(set.statusCode).toBe(200);
+    expect(set.json<{ user: PublicUser }>().user.maxContentRating).toBe('PG-13');
+    expect(
+      (await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).maxContentRating,
+    ).toBe('PG-13');
+    expect(
+      await prisma.auditLog.findFirst({
+        where: { action: 'user.max_content_rating_changed', targetId: user.id, userId: admin.id },
+      }),
+    ).not.toBeNull();
+
+    // Clearing with null removes the cap (the user becomes unrestricted).
+    const cleared = await api('PATCH', `/api/users/${user.id}`, admin.accessToken, {
+      maxContentRating: null,
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json<{ user: PublicUser }>().user.maxContentRating).toBeNull();
+    expect(
+      (await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).maxContentRating,
+    ).toBeNull();
   });
 
   it('returns 404 for a missing user', async () => {

@@ -3,8 +3,19 @@ import { Prisma, type MediaFile, type MediaItem, type MediaStream } from '@prism
 import { ITEM_NOT_FOUND_MESSAGE } from '../auth/access.js';
 import { getPrisma } from '../db/client.js';
 import type { MediaItemType } from '../db/constants.js';
+import {
+  allowedRatingNames,
+  hasRating,
+  isAllowed,
+  KNOWN_RATINGS,
+  type RatingFilter,
+} from './content-rating.js';
 import { notFoundError } from './errors.js';
-import { type AggregateStateView, getStatesForItems } from './watch-state.js';
+import {
+  type AggregateStateView,
+  type ContinueWatchingEntry,
+  getStatesForItems,
+} from './watch-state.js';
 
 // Read-model / query service backing the browse API (routes/media.ts). It owns
 // the serialization of media items, files and streams into the safe, stable
@@ -401,6 +412,137 @@ async function serializeItems(userId: string, rows: ItemWithGenres[]): Promise<S
   return rows.map((row) => serializeItem(row, states.get(row.id)));
 }
 
+// ---------------------------------------------------------------------------
+// Parental controls — browse/search filtering
+// ---------------------------------------------------------------------------
+//
+// Top-level browse surfaces (library listing, recently-added, search) deal only
+// with movies and shows, which carry their OWN contentRating, so a DB-level
+// WHERE on the item's rating is both correct and complete — no ancestor walk is
+// needed and pagination counts stay consistent (the same predicate feeds count
+// and page). Continue-watching is the exception: it lists episodes, whose
+// rating lives on the parent show, so it is filtered in memory after resolving
+// each entry's effective rating (see filterContinueWatchingByRating).
+//
+// The DB filter matches stored rating strings exactly (canonical casing, as
+// written by the metadata agents). The authoritative, case-insensitive security
+// boundary remains assertMediaItemAccess: any stored value that slips past the
+// exact-match filter still 404-cloaks on access, so a casing mismatch is at
+// worst a cosmetic listing artefact, never a bypass.
+
+/**
+ * The `where` fragment that keeps only items a restricted user may see, or an
+ * empty fragment when no filter applies (admin / unrestricted). See
+ * content-rating.ts for the ladder + the unrated rule.
+ */
+function buildRatingWhere(filter: RatingFilter | null): Prisma.MediaItemWhereInput {
+  if (filter === null) return {};
+  const allowed = allowedRatingNames(filter.maxContentRating);
+  if (filter.blockUnrated) {
+    // Restricted + block unrated: only known, allowed rating names. Null, blank
+    // and unknown ratings are all excluded (none is in `allowed`).
+    return { contentRating: { in: allowed } };
+  }
+  // Restricted, unrated permitted: allowed-known names, plus anything the model
+  // treats as unrated — a null rating OR a stored value that is not a known
+  // rating name. Enumerated positively so SQLite's NULL-vs-NOT-IN semantics
+  // never silently drop the null-rated rows.
+  return {
+    OR: [
+      { contentRating: null },
+      { contentRating: { in: allowed } },
+      { contentRating: { notIn: [...KNOWN_RATINGS] } },
+    ],
+  };
+}
+
+/**
+ * Effective content ratings for a batch of items, keyed by id. An item with no
+ * own rating inherits its nearest rated ancestor's (episode -> season -> show),
+ * resolved level-by-level in a bounded number of queries (no per-item walk).
+ * Used by the continue-watching filter, where episodes carry no rating of their
+ * own. Items whose own rating is set cost no query.
+ */
+async function resolveEffectiveRatings(
+  items: readonly { id: string; contentRating: string | null; parentId: string | null }[],
+): Promise<Map<string, string | null>> {
+  const prisma = getPrisma();
+  const result = new Map<string, string | null>();
+  // itemId -> the ancestor id still to inspect for a rating.
+  let pending = new Map<string, string>();
+  for (const item of items) {
+    if (hasRating(item.contentRating)) result.set(item.id, item.contentRating);
+    else if (item.parentId !== null) pending.set(item.id, item.parentId);
+    else result.set(item.id, null);
+  }
+
+  for (let level = 0; pending.size > 0 && level < 6; level += 1) {
+    const ancestorIds = [...new Set(pending.values())];
+    const ancestors = await prisma.mediaItem.findMany({
+      where: { id: { in: ancestorIds } },
+      select: { id: true, contentRating: true, parentId: true },
+    });
+    const byId = new Map(ancestors.map((a) => [a.id, a]));
+    const next = new Map<string, string>();
+    for (const [itemId, ancestorId] of pending) {
+      const ancestor = byId.get(ancestorId);
+      if (ancestor === undefined) result.set(itemId, null);
+      else if (hasRating(ancestor.contentRating)) result.set(itemId, ancestor.contentRating);
+      else if (ancestor.parentId !== null) next.set(itemId, ancestor.parentId);
+      else result.set(itemId, null);
+    }
+    pending = next;
+  }
+  // Anything still pending hit the depth guard: treat as unrated.
+  for (const itemId of pending.keys()) result.set(itemId, null);
+  return result;
+}
+
+/**
+ * The subset of `items` a restricted user may see, as a Set of ids, applying
+ * the same effective-rating rule as item-level enforcement (an unrated
+ * season/episode inherits its show's rating). Returns all ids when no filter
+ * applies. The shared primitive behind the continue-watching filter and the
+ * batch watch-state route, so every leaf-item surface agrees with
+ * assertMediaItemAccess.
+ */
+export async function filterItemIdsByRating(
+  items: readonly { id: string; contentRating: string | null; parentId: string | null }[],
+  filter: RatingFilter | null,
+): Promise<Set<string>> {
+  if (filter === null) return new Set(items.map((item) => item.id));
+  const effective = await resolveEffectiveRatings(items);
+  const allowed = new Set<string>();
+  for (const item of items) {
+    if (isAllowed(effective.get(item.id) ?? null, filter.maxContentRating, filter.blockUnrated)) {
+      allowed.add(item.id);
+    }
+  }
+  return allowed;
+}
+
+/**
+ * Drops continue-watching entries a restricted user may no longer see (e.g. an
+ * episode of a show whose rating now exceeds their cap, or after an admin lowers
+ * the cap). Returns the entries unchanged when no filter applies. Runs in the
+ * watch route so watch-state.ts stays access-control-free.
+ */
+export async function filterContinueWatchingByRating(
+  entries: readonly ContinueWatchingEntry[],
+  filter: RatingFilter | null,
+): Promise<ContinueWatchingEntry[]> {
+  if (filter === null || entries.length === 0) return [...entries];
+  const allowed = await filterItemIdsByRating(
+    entries.map((entry) => ({
+      id: entry.item.id,
+      contentRating: entry.item.contentRating,
+      parentId: entry.item.parentId,
+    })),
+    filter,
+  );
+  return entries.filter((entry) => allowed.has(entry.item.id));
+}
+
 /** Orders a listing at the DB level; ties break on sortTitle then id (stable). */
 function buildOrderBy(
   sort: ListLibraryItemsParams['sort'],
@@ -435,6 +577,7 @@ export async function listLibraryItems(
   userId: string,
   libraryId: string,
   params: ListLibraryItemsParams,
+  ratingFilter: RatingFilter | null,
 ): Promise<ListLibraryItemsResult> {
   const prisma = getPrisma();
   const genre = cleanFilter(params.genre);
@@ -447,6 +590,7 @@ export async function listLibraryItems(
     ...(genre !== undefined ? { genres: { some: { name: genre } } } : {}),
     ...(params.year !== undefined ? { year: params.year } : {}),
     ...(search !== undefined ? { title: { contains: search } } : {}),
+    ...buildRatingWhere(ratingFilter),
   };
   const orderBy = buildOrderBy(params.sort, params.order);
   const skip = (params.page - 1) * params.pageSize;
@@ -523,6 +667,7 @@ export async function searchLibraryItems(
   libraryIds: readonly string[],
   rawQuery: string,
   limit: number,
+  ratingFilter: RatingFilter | null,
 ): Promise<SerializedItem[]> {
   const query = rawQuery.trim();
   if (query === '' || libraryIds.length === 0) return [];
@@ -532,10 +677,17 @@ export async function searchLibraryItems(
       libraryId: { in: [...libraryIds] },
       parentId: null,
       type: { in: [...TOP_LEVEL_TYPES] },
-      OR: [
-        { title: { contains: query } },
-        { sortTitle: { contains: query } },
-        { genres: { some: { name: { contains: query } } } },
+      // The text match and the rating filter must BOTH hold: nest the match
+      // under `AND` so its `OR` never widens past the rating predicate.
+      AND: [
+        {
+          OR: [
+            { title: { contains: query } },
+            { sortTitle: { contains: query } },
+            { genres: { some: { name: { contains: query } } } },
+          ],
+        },
+        buildRatingWhere(ratingFilter),
       ],
     },
     // Coarse order (nulls last for DESC in SQLite): the rerank below keeps this
@@ -562,9 +714,15 @@ export async function getLibraryRecentlyAdded(
   userId: string,
   libraryId: string,
   limit: number,
+  ratingFilter: RatingFilter | null,
 ): Promise<SerializedItem[]> {
   const rows = await getPrisma().mediaItem.findMany({
-    where: { libraryId, parentId: null, type: { in: [...TOP_LEVEL_TYPES] } },
+    where: {
+      libraryId,
+      parentId: null,
+      type: { in: [...TOP_LEVEL_TYPES] },
+      ...buildRatingWhere(ratingFilter),
+    },
     orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
     take: limit,
     include: GENRES_INCLUDE,
@@ -577,6 +735,7 @@ export async function getHomeRecentlyAdded(
   userId: string,
   libraryIds: readonly string[],
   limit: number,
+  ratingFilter: RatingFilter | null,
 ): Promise<SerializedItem[]> {
   if (libraryIds.length === 0) return [];
   const rows = await getPrisma().mediaItem.findMany({
@@ -584,6 +743,7 @@ export async function getHomeRecentlyAdded(
       libraryId: { in: [...libraryIds] },
       parentId: null,
       type: { in: [...TOP_LEVEL_TYPES] },
+      ...buildRatingWhere(ratingFilter),
     },
     orderBy: [{ addedAt: 'desc' }, { id: 'desc' }],
     take: limit,

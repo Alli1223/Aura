@@ -40,6 +40,14 @@ export interface Settings {
    */
   maxQuality: HlsQualityName;
   /**
+   * Parental-controls policy for UNRATED / unknown-rated media. When true, a
+   * user with a content-rating cap (a "restricted" user) is also denied items
+   * that carry no rating (or a rating the model cannot place); when false
+   * (default) such items are shown to everyone. Users with no cap are never
+   * affected. See src/lib/content-rating.ts.
+   */
+  blockUnratedForRestrictedUsers: boolean;
+  /**
    * TMDB credential for metadata enrichment ("" = unset/disabled): either a
    * v3 API key or a v4 read access token (a JWT starting with "eyJ"); the
    * TMDB client detects which style it was given. SECRET — never expose via
@@ -86,6 +94,10 @@ const transcodeDirSchema = z
 const defaultQualitySchema = qualityNameSchema;
 const maxQualitySchema = qualityNameSchema;
 
+const blockUnratedForRestrictedUsersSchema = z.boolean(
+  'blockUnratedForRestrictedUsers must be a boolean',
+);
+
 const tmdbApiKeySchema = z
   .string('tmdbApiKey must be a string')
   .trim()
@@ -107,6 +119,10 @@ const registry: { [K in SettingKey]: SettingDefinition<Settings[K]> } = {
   },
   defaultQuality: { schema: defaultQualitySchema, defaultValue: () => DEFAULT_QUALITY },
   maxQuality: { schema: maxQualitySchema, defaultValue: () => DEFAULT_MAX_QUALITY },
+  blockUnratedForRestrictedUsers: {
+    schema: blockUnratedForRestrictedUsersSchema,
+    defaultValue: () => false,
+  },
   tmdbApiKey: { schema: tmdbApiKeySchema, defaultValue: () => '' },
 };
 
@@ -133,6 +149,7 @@ export const settingsPatchSchema = z
     transcodeDir: transcodeDirSchema,
     defaultQuality: defaultQualitySchema,
     maxQuality: maxQualitySchema,
+    blockUnratedForRestrictedUsers: blockUnratedForRestrictedUsersSchema,
     tmdbApiKey: tmdbApiKeySchema,
   })
   .partial()

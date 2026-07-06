@@ -5,6 +5,7 @@ import {
   assertMediaItemAccess,
   canAccessLibrary,
   getAccessibleLibraryIds,
+  resolveRatingFilter,
 } from '../auth/access.js';
 import type { AuthUser } from '../auth/types.js';
 import { getPrisma } from '../db/client.js';
@@ -106,7 +107,8 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     if (!query.success) return sendValidationError(reply, query.error.issues[0]?.message);
 
     await assertLibraryReadable(request.user, params.id);
-    return listLibraryItems(request.user.id, params.id, query.data);
+    const ratingFilter = await resolveRatingFilter(request.user);
+    return listLibraryItems(request.user.id, params.id, query.data, ratingFilter);
   });
 
   // Recently-added top-level items within one library.
@@ -117,7 +119,13 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     if (!query.success) return sendValidationError(reply, query.error.issues[0]?.message);
 
     await assertLibraryReadable(request.user, params.id);
-    const items = await getLibraryRecentlyAdded(request.user.id, params.id, query.data.limit);
+    const ratingFilter = await resolveRatingFilter(request.user);
+    const items = await getLibraryRecentlyAdded(
+      request.user.id,
+      params.id,
+      query.data.limit,
+      ratingFilter,
+    );
     return { items };
   });
 
@@ -127,7 +135,13 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     if (!query.success) return sendValidationError(reply, query.error.issues[0]?.message);
 
     const libraryIds = await getAccessibleLibraryIds(request.user);
-    const items = await getHomeRecentlyAdded(request.user.id, libraryIds, query.data.limit);
+    const ratingFilter = await resolveRatingFilter(request.user);
+    const items = await getHomeRecentlyAdded(
+      request.user.id,
+      libraryIds,
+      query.data.limit,
+      ratingFilter,
+    );
     return { items };
   });
 

@@ -1,9 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
-import { assertMediaItemAccess, getAccessibleLibraryIds } from '../auth/access.js';
+import {
+  assertMediaItemAccess,
+  getAccessibleLibraryIds,
+  resolveRatingFilter,
+} from '../auth/access.js';
 import { getPrisma } from '../db/client.js';
 import { sendError } from '../lib/errors.js';
+import { filterContinueWatchingByRating, filterItemIdsByRating } from '../lib/media-query.js';
 import { parseBody, parseParams } from '../lib/validation.js';
 import {
   getContinueWatching,
@@ -122,10 +127,16 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
         ? []
         : await prisma.mediaItem.findMany({
             where: { id: { in: uniqueIds } },
-            select: { id: true, libraryId: true },
+            select: { id: true, libraryId: true, contentRating: true, parentId: true },
           });
-    const accessibleIds = items
-      .filter((item) => accessibleLibraryIds.has(item.libraryId))
+    // Library access AND the parental-controls cap: an over-cap id is dropped
+    // from the map exactly like an inaccessible one, so a restricted user's
+    // grid overlay never reveals a blocked item's existence or their progress.
+    const accessibleItems = items.filter((item) => accessibleLibraryIds.has(item.libraryId));
+    const ratingFilter = await resolveRatingFilter(request.user);
+    const allowedRatingIds = await filterItemIdsByRating(accessibleItems, ratingFilter);
+    const accessibleIds = accessibleItems
+      .filter((item) => allowedRatingIds.has(item.id))
       .map((item) => item.id);
 
     const states = await getStatesForItems(request.user.id, accessibleIds);
@@ -146,6 +157,10 @@ export const watchRoutes: FastifyPluginAsync = async (app) => {
 
     const libraryIds = await getAccessibleLibraryIds(request.user);
     const items = await getContinueWatching(request.user.id, libraryIds, query.data.limit);
-    return { items };
+    // Parental controls: drop entries whose (effective) rating exceeds the
+    // user's cap — e.g. an episode of a now-blocked show, or after a cap change.
+    const ratingFilter = await resolveRatingFilter(request.user);
+    const visible = await filterContinueWatchingByRating(items, ratingFilter);
+    return { items: visible };
   });
 };

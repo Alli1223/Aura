@@ -22,6 +22,11 @@ export interface AuthUser {
   mustChangePassword: boolean;
   /** Per-user maximum transcode quality, or null for "no personal cap". */
   maxQuality: string | null;
+  /**
+   * Per-user parental-controls cap: the highest content rating this user may
+   * see/stream (a RATING_LADDER name), or null for "no cap" (unrestricted).
+   */
+  maxContentRating: string | null;
   createdAt: Date;
   lastLoginAt: Date | null;
 }
@@ -49,6 +54,7 @@ export function toAuthUser(user: User): AuthUser {
     isEnabled: user.isEnabled,
     mustChangePassword: user.mustChangePassword,
     maxQuality: user.maxQuality,
+    maxContentRating: user.maxContentRating,
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
   };

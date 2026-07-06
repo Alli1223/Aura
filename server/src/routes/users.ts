@@ -8,6 +8,7 @@ import { toAuthUser } from '../auth/types.js';
 import { getPrisma } from '../db/client.js';
 import { userRoleSchema } from '../db/constants.js';
 import { writeAuditLog } from '../lib/audit.js';
+import { ratingCapSchema } from '../lib/content-rating.js';
 import { ApiError, notFoundError, sendError } from '../lib/errors.js';
 import { parseBody, parseParams } from '../lib/validation.js';
 import { qualityNameSchema } from '../streaming/quality-ladder.js';
@@ -37,14 +38,21 @@ const adminUpdateUserSchema = z
     email: emailSchema.nullable().optional(),
     // null clears any personal cap (the server-wide maxQuality then applies).
     maxQuality: qualityNameSchema.nullable().optional(),
+    // Parental-controls cap: a RATING_LADDER name (G..NC-17), or null to clear
+    // it (the user becomes unrestricted). An invalid rating is a 400.
+    maxContentRating: ratingCapSchema.nullable().optional(),
   })
   .refine(
     (body) =>
       body.role !== undefined ||
       body.isEnabled !== undefined ||
       body.email !== undefined ||
-      body.maxQuality !== undefined,
-    { message: 'At least one of role, isEnabled, email or maxQuality must be provided' },
+      body.maxQuality !== undefined ||
+      body.maxContentRating !== undefined,
+    {
+      message:
+        'At least one of role, isEnabled, email, maxQuality or maxContentRating must be provided',
+    },
   );
 
 const adminSetPasswordSchema = z.object({ newPassword: passwordSchema });
@@ -240,6 +248,9 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
             ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
             ...(body.email !== undefined ? { email: body.email } : {}),
             ...(body.maxQuality !== undefined ? { maxQuality: body.maxQuality } : {}),
+            ...(body.maxContentRating !== undefined
+              ? { maxContentRating: body.maxContentRating }
+              : {}),
           },
         });
         // Disabling a user kills all their refresh sessions immediately.
@@ -295,6 +306,20 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
           ...auditBase,
           action: 'user.max_quality_changed',
           details: { from: target.maxQuality, to: body.maxQuality },
+        },
+        request.log,
+      );
+    }
+    if (
+      body.maxContentRating !== undefined &&
+      body.maxContentRating !== target.maxContentRating
+    ) {
+      await writeAuditLog(
+        prisma,
+        {
+          ...auditBase,
+          action: 'user.max_content_rating_changed',
+          details: { from: target.maxContentRating, to: body.maxContentRating },
         },
         request.log,
       );

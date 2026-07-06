@@ -40,6 +40,11 @@ model User {
   /// Per-user maximum transcode quality (a quality-ladder rung name), or null
   /// for "no personal cap" (the server-wide maxQuality setting then applies).
   maxQuality         String?
+  /// Per-user parental-controls cap: the highest content rating this user may
+  /// see/stream (a RATING_LADDER name — "G".."NC-17"), or null for "no cap"
+  /// (unrestricted). Enforced server-side alongside library grants on every
+  /// media surface (see src/lib/content-rating.ts + src/auth/access.ts).
+  maxContentRating   String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
   lastLoginAt        DateTime?

@@ -77,6 +77,8 @@ export interface ContinueWatchingEntry {
     libraryId: string;
     posterPath: string | null;
     runtimeMs: number | null;
+    /** For the parental-controls filter (an episode inherits its show's). */
+    contentRating: string | null;
   };
 }
 
@@ -398,6 +400,7 @@ export async function getContinueWatching(
           libraryId: true,
           posterPath: true,
           runtimeMs: true,
+          contentRating: true,
         },
       },
     },
