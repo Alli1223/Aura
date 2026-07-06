@@ -78,6 +78,7 @@ interface SettingsBody {
     transcodeDir: string;
     defaultQuality: string;
     maxQuality: string;
+    blockUnratedForRestrictedUsers: boolean;
     tmdbApiKey: string;
   };
 }
@@ -141,6 +142,7 @@ describe('settings service', () => {
       transcodeDir: path.join(configDir, 'transcodes'),
       defaultQuality: '720p',
       maxQuality: '1080p',
+      blockUnratedForRestrictedUsers: false,
       tmdbApiKey: '',
     });
   });
@@ -275,6 +277,7 @@ describe('GET /api/settings', () => {
       transcodeDir: path.join(configDir, 'transcodes'),
       defaultQuality: '720p',
       maxQuality: '1080p',
+      blockUnratedForRestrictedUsers: false,
       tmdbApiKey: '',
     });
   });
@@ -313,6 +316,7 @@ describe('PATCH /api/settings', () => {
       transcodeDir: '/tmp/aura-transcodes',
       defaultQuality: '720p',
       maxQuality: '1080p',
+      blockUnratedForRestrictedUsers: false,
       tmdbApiKey: '',
     });
 
@@ -341,6 +345,7 @@ describe('PATCH /api/settings', () => {
         transcodeDir: '/tmp/aura-transcodes',
         defaultQuality: '720p',
         maxQuality: '1080p',
+        blockUnratedForRestrictedUsers: false,
         tmdbApiKey: '',
       });
     } finally {
