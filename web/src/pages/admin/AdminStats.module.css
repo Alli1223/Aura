@@ -1,0 +1,44 @@
+/* Admin statistics: headline tiles + section spacing (tables reuse Admin.module.css). */
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.stats section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tileGrid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.tileValue {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.tileLabel {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}

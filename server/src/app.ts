@@ -23,9 +23,11 @@ import { getSetting } from './lib/settings.js';
 import { HlsSessionManager } from './streaming/hls-session.js';
 import { accessRoutes } from './routes/access.js';
 import { activityRoutes } from './routes/activity.js';
+import { adminStatsRoutes } from './routes/admin-stats.js';
 import { apiTokenRoutes } from './routes/api-tokens.js';
 import { authRoutes } from './routes/auth.js';
 import { healthRoutes } from './routes/health.js';
+import { historyRoutes } from './routes/history.js';
 import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
 import { mediaRoutes } from './routes/media.js';
@@ -318,6 +320,10 @@ export function buildApp(
   void app.register(mediaRoutes, { prefix: '/api' });
   // Search API: /api/search (access-scoped title/genre search).
   void app.register(searchRoutes, { prefix: '/api' });
+  // Per-user watch history: /api/history and /api/history/:id.
+  void app.register(historyRoutes, { prefix: '/api' });
+  // Admin server-wide statistics: /api/admin/stats.
+  void app.register(adminStatsRoutes, { prefix: '/api/admin' });
   // Admin scheduled-task status + manual trigger API.
   void app.register(tasksRoutes, { prefix: '/api/tasks' });
   // Admin outbound-webhook management API.

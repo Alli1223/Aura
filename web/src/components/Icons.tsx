@@ -145,6 +145,16 @@ export function CheckIcon(props: IconProps) {
   );
 }
 
+export function HistoryIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </Svg>
+  );
+}
+
 /** Dispatches to the icon that matches a library type. */
 export function LibraryIcon({ type, ...props }: IconProps & { type: LibraryType }) {
   switch (type) {
