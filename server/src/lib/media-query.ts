@@ -462,7 +462,7 @@ async function serializeItems(userId: string, rows: ItemWithGenres[]): Promise<S
  * empty fragment when no filter applies (admin / unrestricted). See
  * content-rating.ts for the ladder + the unrated rule.
  */
-function buildRatingWhere(filter: RatingFilter | null): Prisma.MediaItemWhereInput {
+export function buildRatingWhere(filter: RatingFilter | null): Prisma.MediaItemWhereInput {
   if (filter === null) return {};
   const allowed = allowedRatingNames(filter.maxContentRating);
   if (filter.blockUnrated) {

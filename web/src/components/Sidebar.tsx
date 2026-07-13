@@ -2,7 +2,7 @@ import { NavLink } from 'react-router';
 
 import { useLibraries } from '../api/queries';
 import { useAuth } from '../auth/context';
-import { AdminIcon, HistoryIcon, HomeIcon, LibraryIcon } from './Icons';
+import { AdminIcon, CollectionsIcon, HistoryIcon, HomeIcon, LibraryIcon } from './Icons';
 import { Spinner } from './Spinner';
 import styles from './Sidebar.module.css';
 
@@ -19,6 +19,11 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       <NavLink to="/" end className={linkClass} onClick={onNavigate}>
         <HomeIcon />
         <span>Home</span>
+      </NavLink>
+
+      <NavLink to="/collections" className={linkClass} onClick={onNavigate}>
+        <CollectionsIcon />
+        <span>Collections</span>
       </NavLink>
 
       <NavLink to="/history" className={linkClass} onClick={onNavigate}>

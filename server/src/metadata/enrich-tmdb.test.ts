@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { PrismaClient } from '@prisma/client';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { disconnectPrisma, getPrisma } from '../db/client.js';
 import { clearSettingsCache, setSettings } from '../lib/settings.js';
@@ -507,6 +507,167 @@ describe('enrichMovieItem', () => {
     expect(wrongType.status).toBe('error');
     if (wrongType.status === 'error') expect(wrongType.message).toContain('show');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enrichMovieItem — TMDB auto-collections
+// ---------------------------------------------------------------------------
+
+function matrixCollection(posterPath: string | null): unknown {
+  return {
+    id: 2344,
+    name: 'The Matrix Collection',
+    poster_path: posterPath,
+    backdrop_path: '/matrixBack.jpg',
+  };
+}
+
+function matrixSearchBody(): unknown {
+  return {
+    page: 1,
+    results: [
+      {
+        id: 603,
+        title: 'The Matrix',
+        original_title: 'The Matrix',
+        release_date: '1999-03-30',
+        vote_average: 8.2,
+        vote_count: 24000,
+      },
+    ],
+    total_results: 1,
+  };
+}
+
+function matrixDetailsBody(collectionPoster: string | null = '/matrixColl.jpg'): unknown {
+  return {
+    id: 603,
+    title: 'The Matrix',
+    overview: 'A hacker discovers the true nature of his reality.',
+    release_date: '1999-03-30',
+    runtime: 136,
+    vote_average: 8.2,
+    poster_path: '/matrix.jpg',
+    backdrop_path: '/matrixBd.jpg',
+    belongs_to_collection: matrixCollection(collectionPoster),
+    genres: [{ id: 28, name: 'Action' }],
+  };
+}
+
+function reloadedSearchBody(): unknown {
+  return {
+    page: 1,
+    results: [
+      {
+        id: 604,
+        title: 'The Matrix Reloaded',
+        original_title: 'The Matrix Reloaded',
+        release_date: '2003-05-15',
+        vote_average: 7.0,
+        vote_count: 12000,
+      },
+    ],
+    total_results: 1,
+  };
+}
+
+function reloadedDetailsBody(): unknown {
+  return {
+    id: 604,
+    title: 'The Matrix Reloaded',
+    overview: 'Neo and the rebels race to protect Zion.',
+    release_date: '2003-05-15',
+    runtime: 138,
+    vote_average: 7.0,
+    poster_path: '/reloaded.jpg',
+    belongs_to_collection: matrixCollection('/matrixColl.jpg'),
+    genres: [{ id: 28, name: 'Action' }],
+  };
+}
+
+describe('enrichMovieItem — auto-collections', () => {
+  // Collections persist in the shared DB; reset them so each case is isolated.
+  beforeEach(async () => {
+    await prisma.collectionItem.deleteMany();
+    await prisma.collection.deleteMany();
+  });
+
+  it('creates a tmdb collection and links the movie when belongs_to_collection is present', async () => {
+    await setApiKey(API_KEY);
+    const mediaItemId = await createMovieItem({ title: 'The Matrix', year: 1999 });
+    stubTmdb({ '/3/search/movie': matrixSearchBody(), '/3/movie/603': matrixDetailsBody() });
+
+    expect((await enrichMovieItem(mediaItemId)).status).toBe('updated');
+
+    const collection = await prisma.collection.findUniqueOrThrow({
+      where: { tmdbCollectionId: 2344 },
+      include: { items: true },
+    });
+    expect(collection).toMatchObject({
+      name: 'The Matrix Collection',
+      sortName: 'Matrix Collection, The',
+      source: 'tmdb',
+      posterPath: 'tmdb:/matrixColl.jpg',
+    });
+    expect(collection.items.map((entry) => entry.mediaItemId)).toEqual([mediaItemId]);
+  });
+
+  it('creates no collection when the movie has no belongs_to_collection', async () => {
+    await setApiKey(API_KEY);
+    const mediaItemId = await createMovieItem();
+    stubTmdb({ '/3/search/movie': inceptionSearchBody(), '/3/movie/27205': inceptionDetailsBody() });
+
+    expect((await enrichMovieItem(mediaItemId)).status).toBe('updated');
+    expect(await prisma.collection.count()).toBe(0);
+  });
+
+  it('is idempotent: re-enriching the same movie adds no duplicate membership', async () => {
+    await setApiKey(API_KEY);
+    const mediaItemId = await createMovieItem({ title: 'The Matrix', year: 1999 });
+    stubTmdb({ '/3/search/movie': matrixSearchBody(), '/3/movie/603': matrixDetailsBody() });
+
+    await enrichMovieItem(mediaItemId);
+    await enrichMovieItem(mediaItemId);
+
+    expect(await prisma.collection.count()).toBe(1);
+    const members = await prisma.collectionItem.findMany({ where: { mediaItemId } });
+    expect(members).toHaveLength(1);
+  });
+
+  it('reuses the same collection for a second member and appends it in order', async () => {
+    await setApiKey(API_KEY);
+    const first = await createMovieItem({ title: 'The Matrix', year: 1999 });
+    stubTmdb({ '/3/search/movie': matrixSearchBody(), '/3/movie/603': matrixDetailsBody() });
+    await enrichMovieItem(first);
+
+    const second = await createMovieItem({ title: 'The Matrix Reloaded', year: 2003 });
+    stubTmdb({ '/3/search/movie': reloadedSearchBody(), '/3/movie/604': reloadedDetailsBody() });
+    await enrichMovieItem(second);
+
+    const collections = await prisma.collection.findMany({
+      where: { tmdbCollectionId: 2344 },
+      include: { items: { orderBy: { order: 'asc' } } },
+    });
+    expect(collections).toHaveLength(1);
+    expect(collections[0]?.items.map((entry) => entry.mediaItemId)).toEqual([first, second]);
+  });
+
+  it('fills a missing collection poster on a later pass without overwriting an existing one', async () => {
+    await setApiKey(API_KEY);
+    const first = await createMovieItem({ title: 'The Matrix', year: 1999 });
+    stubTmdb({ '/3/search/movie': matrixSearchBody(), '/3/movie/603': matrixDetailsBody(null) });
+    await enrichMovieItem(first);
+    expect(
+      (await prisma.collection.findUniqueOrThrow({ where: { tmdbCollectionId: 2344 } })).posterPath,
+    ).toBeNull();
+
+    const second = await createMovieItem({ title: 'The Matrix Reloaded', year: 2003 });
+    stubTmdb({ '/3/search/movie': reloadedSearchBody(), '/3/movie/604': reloadedDetailsBody() });
+    await enrichMovieItem(second);
+    expect(
+      (await prisma.collection.findUniqueOrThrow({ where: { tmdbCollectionId: 2344 } })).posterPath,
+    ).toBe('tmdb:/matrixColl.jpg');
   });
 });
 

@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 
 import { getPrisma } from '../db/client.js';
 import { getSetting } from '../lib/settings.js';
+import { toSortTitle } from '../scanner/scan.js';
 import {
   isTmdbClientError,
   TmdbClient,
@@ -211,6 +212,72 @@ function errorResult(mediaItemId: string, message: string): {
   return { status: 'error', mediaItemId, message };
 }
 
+/**
+ * Auto-collections: when TMDB reports a movie `belongs_to_collection` (e.g. "The
+ * Matrix Collection"), link the movie into an Aura Collection keyed by the TMDB
+ * collection id. Additive + idempotent by design:
+ *
+ *   - The collection is upserted by its unique `tmdbCollectionId`, so
+ *     re-enriching another member never duplicates it. A missing poster is
+ *     filled on a later pass, but an existing name/poster is never overwritten.
+ *   - Membership is created only when absent (unique on collectionId+mediaItemId),
+ *     so re-enriching the SAME movie never adds a second row.
+ *
+ * We deliberately DO NOT fetch the full TMDB collection contents here — only the
+ * movies actually scanned into a library are ever linked, so a collection grows
+ * as its films are added and never lists titles the server does not own.
+ */
+async function linkTmdbCollection(
+  prisma: ReturnType<typeof getPrisma>,
+  mediaItemId: string,
+  details: TmdbMovieDetails,
+): Promise<void> {
+  const belongs = details.belongs_to_collection;
+  if (belongs === null || belongs === undefined) return;
+
+  const posterPath = nonEmpty(belongs.poster_path);
+  const posterUri = posterPath === undefined ? undefined : toTmdbUri(posterPath);
+
+  const existing = await prisma.collection.findUnique({
+    where: { tmdbCollectionId: belongs.id },
+  });
+  let collectionId: string;
+  if (existing === null) {
+    const created = await prisma.collection.create({
+      data: {
+        name: belongs.name,
+        sortName: toSortTitle(belongs.name),
+        source: 'tmdb',
+        tmdbCollectionId: belongs.id,
+        posterPath: posterUri ?? null,
+      },
+    });
+    collectionId = created.id;
+  } else {
+    collectionId = existing.id;
+    // Fill a poster gap on a later pass; never overwrite existing artwork/name.
+    if (existing.posterPath === null && posterUri !== undefined) {
+      await prisma.collection.update({
+        where: { id: existing.id },
+        data: { posterPath: posterUri },
+      });
+    }
+  }
+
+  const already = await prisma.collectionItem.findUnique({
+    where: { collectionId_mediaItemId: { collectionId, mediaItemId } },
+    select: { id: true },
+  });
+  if (already !== null) return;
+  const max = await prisma.collectionItem.aggregate({
+    where: { collectionId },
+    _max: { order: true },
+  });
+  await prisma.collectionItem.create({
+    data: { collectionId, mediaItemId, order: (max._max.order ?? -1) + 1 },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Enrichers
 // ---------------------------------------------------------------------------
@@ -245,6 +312,15 @@ export async function enrichMovieItem(
 
     const details = await client.movieDetails(match.id);
     await prisma.mediaItem.update({ where: { id: mediaItemId }, data: movieUpdateData(details) });
+
+    // Auto-collection linking is best-effort: a hiccup here must never fail the
+    // (successful) movie enrichment it rides on.
+    try {
+      await linkTmdbCollection(prisma, mediaItemId, details);
+    } catch (collectionErr) {
+      log?.warn({ mediaItemId, err: collectionErr }, 'TMDB auto-collection linking failed');
+    }
+
     return { status: 'updated', mediaItemId, tmdbId: details.id };
   } catch (err) {
     if (isTmdbClientError(err)) {

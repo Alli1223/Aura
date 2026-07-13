@@ -3,6 +3,8 @@ import { Route, Routes } from 'react-router';
 
 import { AppShell } from '../components/AppShell';
 import { FullPageLoader } from '../components/Spinner';
+import { CollectionDetailPage } from '../pages/CollectionDetailPage';
+import { CollectionsPage } from '../pages/CollectionsPage';
 import { HistoryPage } from '../pages/HistoryPage';
 import { HomePage } from '../pages/HomePage';
 import { ItemDetailPage } from '../pages/ItemDetailPage';
@@ -57,6 +59,8 @@ export function AppRoutes() {
             <Route index element={<HomePage />} />
             <Route path="library/:id" element={<LibraryPage />} />
             <Route path="items/:id" element={<ItemDetailPage />} />
+            <Route path="collections" element={<CollectionsPage />} />
+            <Route path="collections/:id" element={<CollectionDetailPage />} />
             <Route path="history" element={<HistoryPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="settings" element={<SettingsPage />} />

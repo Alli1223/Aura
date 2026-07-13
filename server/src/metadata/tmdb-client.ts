@@ -229,6 +229,17 @@ const contentRatingsSchema = z.looseObject({
     .default([]),
 });
 
+/**
+ * The movie's franchise/collection membership, when TMDB has one (e.g. "The
+ * Matrix Collection"). Drives Aura's auto-collections during enrichment.
+ */
+const belongsToCollectionSchema = z.looseObject({
+  id: z.number(),
+  name: z.string(),
+  poster_path: z.string().nullish(),
+  backdrop_path: z.string().nullish(),
+});
+
 const movieDetailsSchema = z.looseObject({
   id: z.number(),
   title: z.string(),
@@ -243,6 +254,7 @@ const movieDetailsSchema = z.looseObject({
   imdb_id: z.string().nullish(),
   poster_path: z.string().nullish(),
   backdrop_path: z.string().nullish(),
+  belongs_to_collection: belongsToCollectionSchema.nullish(),
   genres: z.array(genreSchema).default([]),
   release_dates: releaseDatesSchema.nullish(),
   credits: creditsSchema.nullish(),
