@@ -35,6 +35,7 @@ import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
 import { logsRoutes } from './routes/logs.js';
 import { mediaRoutes } from './routes/media.js';
+import { playlistRoutes } from './routes/playlists.js';
 import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
 import { searchRoutes } from './routes/search.js';
@@ -363,6 +364,8 @@ export function buildApp(
   // Collections: /api/collections (browse), /:id (detail), /:id/poster,
   // + admin CRUD & membership. The poster route needs the artwork config.
   void app.register(collectionRoutes, { prefix: '/api/collections', config });
+  // Per-user playlists: /api/playlists and /api/playlists/:id(/items...).
+  void app.register(playlistRoutes, { prefix: '/api/playlists' });
   // Admin server-wide statistics: /api/admin/stats.
   void app.register(adminStatsRoutes, { prefix: '/api/admin' });
   // Admin scheduled-task status + manual trigger API.

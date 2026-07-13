@@ -1,0 +1,125 @@
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.feedback {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: 20;
+  min-width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.4));
+}
+
+.menuState {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.menuItem:hover:not(:disabled),
+.menuItem:focus-visible {
+  background: var(--color-surface-2);
+  outline: none;
+}
+
+.menuItem:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.itemName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemCount {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.newItem {
+  border-top: 1px solid var(--color-border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.emptyHint {
+  margin: 0 0 var(--space-2);
+  padding: 0 0.6rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.createForm {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) 0.4rem 0.2rem;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.input:focus-visible {
+  outline: none;
+  border-color: var(--color-border-strong);
+  box-shadow: var(--focus-ring);
+}
+
+.createBtn {
+  flex-shrink: 0;
+}

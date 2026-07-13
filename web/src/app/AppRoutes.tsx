@@ -11,6 +11,8 @@ import { ItemDetailPage } from '../pages/ItemDetailPage';
 import { LibraryPage } from '../pages/LibraryPage';
 import { LoginPage } from '../pages/LoginPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
+import { PlaylistDetailPage } from '../pages/PlaylistDetailPage';
+import { PlaylistsPage } from '../pages/PlaylistsPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SearchPage } from '../pages/SearchPage';
 import { SettingsPage } from '../pages/SettingsPage';
@@ -62,6 +64,8 @@ export function AppRoutes() {
             <Route path="collections" element={<CollectionsPage />} />
             <Route path="collections/:id" element={<CollectionDetailPage />} />
             <Route path="history" element={<HistoryPage />} />
+            <Route path="playlists" element={<PlaylistsPage />} />
+            <Route path="playlists/:id" element={<PlaylistDetailPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route element={<RequireAdmin />}>
