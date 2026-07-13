@@ -84,7 +84,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **api-tokens** — Personal API tokens for third-party clients/scripts, scoped read-only vs full, revocable; OpenAPI spec published at `/api/docs`
 - [x] **logs-viewer** — Admin log viewer with level filtering + download
 - [ ] **e2e-tests** — Playwright end-to-end suite: register→grant→browse→play happy path, access-control denial paths, admin flows; runs in CI against docker compose
-- [ ] **remote-access-docs** — Production deployment docs: reverse proxy (Caddy/Traefik) TLS examples, security checklist
+- [x] **remote-access-docs** — Production deployment docs: reverse proxy (Caddy/Traefik) TLS examples, security checklist
 
 ## Phase 6 — Beyond (optional, after parity)
 
