@@ -157,13 +157,24 @@ export function useContinueWatching(
   });
 }
 
+/** Optional tuning for the recently-added query (e.g. background polling). */
+export interface RecentlyAddedOptions {
+  /**
+   * Poll interval (ms) so freshly added items surface without a reload. Omit to
+   * disable polling (the default; the query still refreshes on its staleTime).
+   */
+  refetchInterval?: number;
+}
+
 /** Recently added across every permitted library (cross-library row + On Deck). */
 export function useRecentlyAdded(
   limit: number = RECENTLY_ADDED_LIMIT,
+  options: RecentlyAddedOptions = {},
 ): UseQueryResult<MediaItem[]> {
   return useQuery({
     queryKey: homeKeys.recentlyAdded(limit),
     queryFn: () => getRecentlyAdded(limit),
+    refetchInterval: options.refetchInterval,
   });
 }
 

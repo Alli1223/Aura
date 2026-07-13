@@ -25,6 +25,37 @@ if (!('IntersectionObserver' in globalThis)) {
     MockIntersectionObserver as unknown as typeof IntersectionObserver;
 }
 
+// This jsdom build does not expose Web Storage (Node's experimental global
+// `localStorage` is inert without --localstorage-file), so provide a minimal
+// in-memory implementation. Components that persist small bits of per-user UI
+// state (e.g. the new-media indicator's "last seen" marker) rely on it; each
+// test starts from a clean store via the beforeEach below.
+class MemoryStorage implements Storage {
+  private store = new Map<string, string>();
+  get length(): number {
+    return this.store.size;
+  }
+  clear(): void {
+    this.store.clear();
+  }
+  getItem(key: string): string | null {
+    return this.store.has(key) ? this.store.get(key)! : null;
+  }
+  key(index: number): string | null {
+    return Array.from(this.store.keys())[index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+}
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  value: new MemoryStorage(),
+});
+
 // AuthImage turns a fetched artwork blob into an object URL. jsdom's own
 // createObjectURL (when present) rejects a blob produced by a different realm's
 // Response, so override unconditionally with a deterministic stub — tests only
@@ -38,6 +69,7 @@ URL.revokeObjectURL = () => {};
 beforeEach(() => {
   setAccessToken(null);
   setAuthBridge(null);
+  localStorage.clear();
 });
 
 afterEach(() => {
