@@ -1,0 +1,22 @@
+{
+  "name": "@aura/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aura end-to-end tests (Playwright) — run against a live/built Aura instance",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "fixtures": "bash scripts/generate-fixtures.sh",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  }
+}
