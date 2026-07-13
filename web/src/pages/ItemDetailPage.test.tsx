@@ -86,7 +86,7 @@ describe('ItemDetailPage — movie', () => {
     expect(screen.getByText('English · SUBRIP')).toBeInTheDocument();
 
     // Play button targets the player at the first file.
-    expect(screen.getByRole('link', { name: /play/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /^play$/i })).toHaveAttribute(
       'href',
       '/player/file-1?item=movie-1',
     );
@@ -106,7 +106,7 @@ describe('ItemDetailPage — movie', () => {
 
     await screen.findByRole('heading', { name: 'Dune' });
     // Defaults to files[0].
-    expect(screen.getByRole('link', { name: /play/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /^play$/i })).toHaveAttribute(
       'href',
       '/player/file-1?item=movie-1',
     );
@@ -115,7 +115,7 @@ describe('ItemDetailPage — movie', () => {
       target: { value: 'file-2' },
     });
 
-    expect(screen.getByRole('link', { name: /play/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /^play$/i })).toHaveAttribute(
       'href',
       '/player/file-2?item=movie-1',
     );
@@ -220,7 +220,7 @@ describe('ItemDetailPage — season', () => {
     expect(screen.getByText('Half Loop')).toBeInTheDocument();
 
     // Each episode's Play link targets the player at its primary file.
-    const playLinks = screen.getAllByRole('link', { name: /play/i });
+    const playLinks = screen.getAllByRole('link', { name: /^play$/i });
     expect(playLinks[0]).toHaveAttribute('href', '/player/ep1-file?item=ep-1');
     expect(playLinks[1]).toHaveAttribute('href', '/player/ep2-file?item=ep-2');
 

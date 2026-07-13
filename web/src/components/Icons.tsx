@@ -164,6 +164,31 @@ export function CollectionsIcon(props: IconProps) {
   );
 }
 
+export function PlaylistIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h11M4 12h11M4 17h7" />
+      <path d="M17 15v6l4-3-4-3z" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
+export function PlusIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  );
+}
+
+export function TrashIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
+    </Svg>
+  );
+}
+
 /** Dispatches to the icon that matches a library type. */
 export function LibraryIcon({ type, ...props }: IconProps & { type: LibraryType }) {
   switch (type) {

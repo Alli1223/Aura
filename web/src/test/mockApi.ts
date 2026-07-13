@@ -15,6 +15,7 @@ import type {
   PlayerSubtitleTrack,
   QualitiesResponse,
 } from '../api/player';
+import type { PlaylistDetail, PlaylistItem, PlaylistSummary } from '../api/playlists';
 import type { TrickplayManifest } from '../api/trickplay';
 import type { AuthUser, Library, LibraryType, PublicSettings } from '../api/types';
 
@@ -422,6 +423,44 @@ export function makeSubtitleTrack(
   };
 }
 
+let playlistCounter = 0;
+/** A playlist listing summary with sensible defaults. */
+export function makePlaylistSummary(overrides: Partial<PlaylistSummary> = {}): PlaylistSummary {
+  playlistCounter += 1;
+  return {
+    id: overrides.id ?? `pl-${playlistCounter}`,
+    name: overrides.name ?? `Playlist ${playlistCounter}`,
+    itemCount: overrides.itemCount ?? 0,
+    posterUrl: overrides.posterUrl ?? null,
+    createdAt: overrides.createdAt ?? '2026-01-01T00:00:00.000Z',
+    updatedAt: overrides.updatedAt ?? '2026-01-01T00:00:00.000Z',
+  };
+}
+
+/** A serialized playlist entry (MediaItem + order/play info), defaulting to playable. */
+export function makePlaylistItem(overrides: Partial<PlaylistItem> = {}): PlaylistItem {
+  const { order, hasFile, primaryMediaFileId, ...itemOverrides } = overrides;
+  const item = makeItem(itemOverrides);
+  return {
+    ...item,
+    order: order ?? 0,
+    hasFile: hasFile ?? true,
+    primaryMediaFileId: primaryMediaFileId !== undefined ? primaryMediaFileId : `${item.id}-file`,
+  };
+}
+
+/** A full playlist detail payload with the items defaulted to empty. */
+export function makePlaylistDetail(overrides: Partial<PlaylistDetail> = {}): PlaylistDetail {
+  playlistCounter += 1;
+  return {
+    id: overrides.id ?? `pl-${playlistCounter}`,
+    name: overrides.name ?? `Playlist ${playlistCounter}`,
+    createdAt: overrides.createdAt ?? '2026-01-01T00:00:00.000Z',
+    updatedAt: overrides.updatedAt ?? '2026-01-01T00:00:00.000Z',
+    items: overrides.items ?? [],
+  };
+}
+
 export interface MockApiConfig {
   serverName?: string;
   registrationEnabled?: boolean;
@@ -481,6 +520,10 @@ export interface MockApiConfig {
    * A file with no entry answers 404 (no scrub preview), like the real server.
    */
   trickplay?: Record<string, TrickplayManifest>;
+  /** Playlist summaries served by GET /playlists. */
+  playlists?: PlaylistSummary[];
+  /** Playlist detail payloads keyed by id, served by GET /playlists/:id. */
+  playlistDetails?: Record<string, PlaylistDetail>;
 }
 
 export interface MockApi {
@@ -511,8 +554,12 @@ export interface MockApi {
     audioTracks: Record<string, PlayerAudioTrack[]>;
     subtitles: Record<string, PlayerSubtitleTrack[]>;
     trickplay: Record<string, TrickplayManifest>;
+    playlists: PlaylistSummary[];
+    playlistDetails: Record<string, PlaylistDetail>;
     /** Monotonic counter so each HLS start returns a distinct session id. */
     hlsSessionCounter: number;
+    /** Monotonic counter so each created playlist gets a distinct id. */
+    playlistIdCounter: number;
   };
 }
 
@@ -717,7 +764,10 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     audioTracks: config.audioTracks ?? {},
     subtitles: config.subtitles ?? {},
     trickplay: config.trickplay ?? {},
+    playlists: config.playlists ?? [],
+    playlistDetails: config.playlistDetails ?? {},
     hlsSessionCounter: 0,
+    playlistIdCounter: 0,
   };
   const conflictTaskId = config.taskRunConflictId;
 
@@ -1318,6 +1368,132 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       const manifest = state.trickplay[mediaFileId];
       if (manifest === undefined) return { status: 404, body: err('NOT_FOUND', 'Not found') };
       return { status: 200, body: manifest };
+    }
+
+    // ---- Playlists ---------------------------------------------------------
+    const NOW = '2026-01-01T00:00:00.000Z';
+    const playlistNotFound = { status: 404, body: err('NOT_FOUND', 'Playlist not found') };
+    /**
+     * The detail for a playlist, treating any playlist that exists only as a
+     * listing summary as operable: an empty detail is synthesised on demand (the
+     * real server always has the full row). Returns undefined only when neither a
+     * detail nor a summary exists (a genuine 404).
+     */
+    const resolvePlaylistDetail = (id: string): PlaylistDetail | undefined => {
+      const existing = state.playlistDetails[id];
+      if (existing !== undefined) return existing;
+      const summary = state.playlists.find((entry) => entry.id === id);
+      if (summary === undefined) return undefined;
+      const created: PlaylistDetail = {
+        id,
+        name: summary.name,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        items: [],
+      };
+      state.playlistDetails[id] = created;
+      return created;
+    };
+    /** Reflects a detail's item count/poster into its listing summary, if present. */
+    const syncPlaylistSummary = (detail: PlaylistDetail): void => {
+      const summary = state.playlists.find((entry) => entry.id === detail.id);
+      if (summary === undefined) return;
+      summary.itemCount = detail.items.length;
+      summary.posterUrl = detail.items.find((item) => item.posterUrl !== null)?.posterUrl ?? null;
+    };
+
+    if (path === '/api/playlists' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      return { status: 200, body: { playlists: state.playlists } };
+    }
+    if (path === '/api/playlists' && method === 'POST') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const name = String(body.name ?? '').trim();
+      if (name === '') return { status: 400, body: err('VALIDATION', 'Name is required') };
+      state.playlistIdCounter += 1;
+      const id = `pl-new-${state.playlistIdCounter}`;
+      const detail: PlaylistDetail = { id, name, createdAt: NOW, updatedAt: NOW, items: [] };
+      state.playlistDetails[id] = detail;
+      state.playlists = [
+        { id, name, itemCount: 0, posterUrl: null, createdAt: NOW, updatedAt: NOW },
+        ...state.playlists,
+      ];
+      return { status: 201, body: { playlist: detail } };
+    }
+
+    // Add (POST) or reorder (PUT) a playlist's items.
+    const playlistItemsMatch = /^\/api\/playlists\/([^/]+)\/items$/.exec(path);
+    if (playlistItemsMatch !== null && (method === 'POST' || method === 'PUT')) {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(playlistItemsMatch[1] ?? '');
+      const detail = resolvePlaylistDetail(id);
+      if (detail === undefined) return playlistNotFound;
+
+      if (method === 'POST') {
+        const mediaItemId = String(body.mediaItemId ?? '');
+        const already = detail.items.some((item) => item.id === mediaItemId);
+        if (!already) {
+          detail.items = [
+            ...detail.items,
+            makePlaylistItem({ id: mediaItemId, order: detail.items.length }),
+          ];
+          syncPlaylistSummary(detail);
+        }
+        return { status: already ? 200 : 201, body: { added: !already } };
+      }
+
+      // PUT reorder: provided ids first (in order), then any omitted items.
+      const orderedIds = Array.isArray(body.orderedItemIds) ? (body.orderedItemIds as string[]) : [];
+      const byId = new Map(detail.items.map((item) => [item.id, item]));
+      const seen = new Set<string>();
+      const ordered: PlaylistItem[] = [];
+      for (const mid of orderedIds) {
+        if (seen.has(mid)) continue;
+        const item = byId.get(mid);
+        if (item === undefined) continue;
+        seen.add(mid);
+        ordered.push(item);
+      }
+      for (const item of detail.items) if (!seen.has(item.id)) ordered.push(item);
+      detail.items = ordered.map((item, index) => ({ ...item, order: index }));
+      return { status: 200, body: { playlist: detail } };
+    }
+
+    // Remove one item.
+    const playlistItemMatch = /^\/api\/playlists\/([^/]+)\/items\/([^/]+)$/.exec(path);
+    if (playlistItemMatch !== null && method === 'DELETE') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(playlistItemMatch[1] ?? '');
+      const mediaItemId = decodeURIComponent(playlistItemMatch[2] ?? '');
+      const detail = resolvePlaylistDetail(id);
+      if (detail !== undefined) {
+        detail.items = detail.items
+          .filter((item) => item.id !== mediaItemId)
+          .map((item, index) => ({ ...item, order: index }));
+        syncPlaylistSummary(detail);
+      }
+      return { status: 204 };
+    }
+
+    // Single-playlist detail / rename / delete.
+    const playlistIdMatch = /^\/api\/playlists\/([^/]+)$/.exec(path);
+    if (playlistIdMatch !== null && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(playlistIdMatch[1] ?? '');
+      const detail = resolvePlaylistDetail(id);
+      if (detail === undefined) return playlistNotFound;
+      if (method === 'GET') return { status: 200, body: { playlist: detail } };
+      if (method === 'DELETE') {
+        delete state.playlistDetails[id];
+        state.playlists = state.playlists.filter((entry) => entry.id !== id);
+        return { status: 204 };
+      }
+      const name = String(body.name ?? '').trim();
+      if (name === '') return { status: 400, body: err('VALIDATION', 'Name is required') };
+      detail.name = name;
+      const summary = state.playlists.find((entry) => entry.id === id);
+      if (summary !== undefined) summary.name = name;
+      return { status: 200, body: { playlist: detail } };
     }
 
     return { status: 404, body: err('NOT_FOUND', `No mock for ${method} ${path}`) };

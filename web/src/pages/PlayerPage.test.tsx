@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, type Location } from 'react-router';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import Hls from 'hls.js';
@@ -14,6 +14,8 @@ import {
   makeDirectDecision,
   makeFile,
   makeItem,
+  makePlaylistDetail,
+  makePlaylistItem,
   makeQualities,
   makeSubtitleTrack,
   makeTranscodeDecision,
@@ -624,6 +626,70 @@ describe('PlayerPage — user playback preferences', () => {
     // No auto-advance: the countdown text is absent, but a manual Play now remains.
     expect(screen.queryByText(/starting in/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Play now/ })).toBeInTheDocument();
+  });
+});
+
+describe('PlayerPage — playlist queue (continuous playback)', () => {
+  const twoItemPlaylist = () =>
+    makePlaylistDetail({
+      id: 'pl-1',
+      items: [
+        makePlaylistItem({ id: 'a', title: 'Alpha', order: 0, primaryMediaFileId: 'file-1' }),
+        makePlaylistItem({ id: 'b', title: 'Bravo', order: 1, primaryMediaFileId: 'file-2' }),
+      ],
+    });
+
+  it('advances to the next playlist item on ended, carrying the playlist URL context', async () => {
+    let location: Location | undefined;
+    const api = installMockApi({
+      session: makeUser({ autoplayNextEpisode: true }),
+      decisions: {
+        'file-1': makeDirectDecision('file-1'),
+        'file-2': makeDirectDecision('file-2'),
+      },
+      playlistDetails: { 'pl-1': twoItemPlaylist() },
+    });
+    renderApp(['/player/file-1?item=a&playlist=pl-1&index=0'], (loc) => {
+      location = loc;
+    });
+
+    await screen.findByTestId('player-video');
+    // The player derives its queue from the playlist (GET /api/playlists/pl-1).
+    await waitFor(() =>
+      expect(
+        api.fetchMock.mock.calls.some(([url]) => String(url).includes('/api/playlists/pl-1')),
+      ).toBe(true),
+    );
+
+    fireEvent.ended(screen.getByTestId('player-video'));
+    // "Up next" surfaces the next playlist item.
+    expect(await screen.findByText('Up next')).toBeInTheDocument();
+    expect(screen.getByText(/Bravo/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /play now/i }));
+
+    // Navigates to the next item with the playlist queue context in the URL.
+    await waitFor(() => expect(location?.pathname).toBe('/player/file-2'));
+    const search = new URLSearchParams(location?.search ?? '');
+    expect(search.get('item')).toBe('b');
+    expect(search.get('playlist')).toBe('pl-1');
+    expect(search.get('index')).toBe('1');
+  });
+
+  it('shows "Finished" at the end of the playlist (no next item)', async () => {
+    installMockApi({
+      session: makeUser({ autoplayNextEpisode: true }),
+      decisions: { 'file-2': makeDirectDecision('file-2') },
+      playlistDetails: { 'pl-1': twoItemPlaylist() },
+    });
+    renderApp(['/player/file-2?item=b&playlist=pl-1&index=1']);
+
+    const video = await screen.findByTestId('player-video');
+    fireEvent.ended(video);
+
+    expect(await screen.findByRole('dialog', { name: 'Playback finished' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /replay/i })).toBeInTheDocument();
+    expect(screen.queryByText('Up next')).not.toBeInTheDocument();
   });
 });
 

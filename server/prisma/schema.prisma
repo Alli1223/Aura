@@ -66,6 +66,7 @@ model User {
   watchStates     WatchState[]
   auditLogs       AuditLog[]
   apiTokens       ApiToken[]
+  playlists       Playlist[]
 }
 
 /// Personal API tokens for third-party clients/scripts. Only a sha256 hash of
@@ -193,6 +194,7 @@ model MediaItem {
   files           MediaFile[]
   watchStates     WatchState[]
   collectionItems CollectionItem[]
+  playlistItems   PlaylistItem[]
 
   @@index([libraryId, type])
   @@index([parentId])
@@ -326,6 +328,42 @@ model WatchState {
   updatedAt   DateTime  @updatedAt
 
   @@unique([userId, mediaItemId])
+  @@index([mediaItemId])
+}
+
+/// A per-user, ordered playlist of arbitrary media items (movies/episodes).
+/// Playlists are strictly private: every playlist route is scoped to the
+/// caller's own rows, and another user's playlist id is cloaked as 404. Deleting
+/// the owning user cascades away their playlists.
+model Playlist {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PlaylistItem[]
+
+  @@index([userId])
+}
+
+/// One entry in a playlist. `order` is the 0-based position within its playlist
+/// (contiguous; rewritten on reorder). The @@unique guarantees an item appears
+/// at most once per playlist, so a mediaItemId is a stable external handle for
+/// remove/reorder. Deleting the playlist OR the media item cascades the row away
+/// (a media item removed by a rescan silently drops out of every playlist).
+model PlaylistItem {
+  id          String    @id @default(cuid())
+  playlistId  String
+  playlist    Playlist  @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  mediaItemId String
+  mediaItem   MediaItem @relation(fields: [mediaItemId], references: [id], onDelete: Cascade)
+  order       Int
+  createdAt   DateTime  @default(now())
+
+  @@unique([playlistId, mediaItemId])
+  @@index([playlistId])
   @@index([mediaItemId])
 }
 

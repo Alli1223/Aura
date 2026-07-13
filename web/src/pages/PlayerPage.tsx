@@ -13,6 +13,7 @@ import { useLocation, useNavigate, useParams, useSearchParams } from 'react-rout
 
 import { ApiError } from '../api/client';
 import { useItemDetail, type ChapterInfo } from '../api/detail';
+import { usePlaylist } from '../api/playlists';
 import {
   detectClientCapabilities,
   getAudioTracks,
@@ -65,11 +66,19 @@ const PROGRESS_INTERVAL_MS = 10_000;
 const NEXT_EPISODE_COUNTDOWN_S = 10;
 const IMAGE_SUB_REASON = 'Not supported in browser';
 
-/** A queued next episode passed via navigation state for autoplay. */
+/**
+ * A queued next item for autoplay. Episodes come in via navigation `state`; a
+ * playlist queue additionally carries the playlist id + this item's index so the
+ * next hop can rebuild a refresh-safe `?playlist=&index=` URL.
+ */
 interface PlayDescriptor {
   mediaFileId: string;
   itemId: string;
   title: string;
+  /** Playlist context, when playing from a playlist queue. */
+  playlistId?: string;
+  /** This item's 0-based index within the playlist (for the next URL). */
+  index?: number;
 }
 
 function clamp01(value: number): number {
@@ -1032,10 +1041,16 @@ function PlayerStage(props: StageProps) {
     const [next, ...rest] = props.nextQueue;
     if (next === undefined) return;
     reportNow();
-    navigate(
-      `/player/${encodeURIComponent(next.mediaFileId)}?item=${encodeURIComponent(next.itemId)}`,
-      { state: { queue: rest } },
-    );
+    const query = new URLSearchParams({ item: next.itemId });
+    // Playlist queue: carry the playlist context in the URL so the next item is
+    // refresh-safe/shareable (the player re-derives the tail from the server).
+    if (next.playlistId !== undefined && next.index !== undefined) {
+      query.set('playlist', next.playlistId);
+      query.set('index', String(next.index));
+    }
+    navigate(`/player/${encodeURIComponent(next.mediaFileId)}?${query.toString()}`, {
+      state: { queue: rest },
+    });
   }, [navigate, props.nextQueue, reportNow]);
 
   const qualityOptions: QualityOption[] = useMemo(() => {
@@ -1165,7 +1180,40 @@ function PlayerStage(props: StageProps) {
 
 // ---- Route entry ------------------------------------------------------------
 
-function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: string | null }) {
+/**
+ * The autoplay queue when playing from a playlist: the remaining playable items
+ * after `index`, as PlayDescriptors carrying the playlist context. Empty (and
+ * fires no request) when there is no playlist. Refresh-safe — it re-derives from
+ * the server on every hop rather than relying on navigation state.
+ */
+function usePlaylistQueue(playlistId: string | null, index: number | null): PlayDescriptor[] {
+  const query = usePlaylist(playlistId ?? '', { enabled: playlistId !== null });
+  const items = query.data?.items;
+  return useMemo(() => {
+    if (playlistId === null || index === null || items === undefined) return [];
+    return items
+      .filter((item) => item.order > index && item.hasFile && item.primaryMediaFileId !== null)
+      .map((item) => ({
+        mediaFileId: item.primaryMediaFileId as string,
+        itemId: item.id,
+        title: item.title,
+        playlistId,
+        index: item.order,
+      }));
+  }, [playlistId, index, items]);
+}
+
+function PlayerView({
+  mediaFileId,
+  itemId,
+  playlistId,
+  playlistIndex,
+}: {
+  mediaFileId: string;
+  itemId: string | null;
+  playlistId: string | null;
+  playlistIndex: number | null;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
@@ -1174,7 +1222,11 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
   const detailQuery = useItemDetail(itemId ?? '', { enabled: itemId !== null });
   const qualitiesQuery = useQualities();
 
-  const nextQueue = useMemo(() => readNextQueue(location.state), [location.state]);
+  const stateQueue = useMemo(() => readNextQueue(location.state), [location.state]);
+  const playlistQueue = usePlaylistQueue(playlistId, playlistIndex);
+  // A playlist context (from the URL) drives the queue when present; otherwise
+  // fall back to the next-episode queue passed via navigation state.
+  const nextQueue = playlistId !== null ? playlistQueue : stateQueue;
 
   const onBack = useCallback(() => {
     if (itemId !== null) navigate(`/items/${itemId}`);
@@ -1253,11 +1305,23 @@ function PlayerView({ mediaFileId, itemId }: { mediaFileId: string; itemId: stri
   );
 }
 
-/** Route entry for `/player/:mediaFileId?item=:itemId`. */
+/** Route entry for `/player/:mediaFileId?item=:itemId&playlist=:id&index=N`. */
 export function PlayerPage() {
   const { mediaFileId = '' } = useParams();
   const [searchParams] = useSearchParams();
   const itemId = searchParams.get('item');
-  // Key on the file id so navigating between episodes fully remounts the engine.
-  return <PlayerView key={mediaFileId} mediaFileId={mediaFileId} itemId={itemId} />;
+  const playlistId = searchParams.get('playlist');
+  const indexParam = searchParams.get('index');
+  const playlistIndex =
+    indexParam !== null && Number.isFinite(Number(indexParam)) ? Number(indexParam) : null;
+  // Key on the file id so navigating between items fully remounts the engine.
+  return (
+    <PlayerView
+      key={mediaFileId}
+      mediaFileId={mediaFileId}
+      itemId={itemId}
+      playlistId={playlistId}
+      playlistIndex={playlistIndex}
+    />
+  );
 }

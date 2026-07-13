@@ -10,6 +10,7 @@ import {
   type MediaFileInfo,
 } from '../api/detail';
 import { artworkSrc, type MediaItem } from '../api/media';
+import { AddToPlaylistMenu } from '../components/AddToPlaylistMenu';
 import { AuthImage } from '../components/AuthImage';
 import { CheckIcon } from '../components/Icons';
 import { ErrorState } from '../components/ErrorState';
@@ -379,6 +380,8 @@ function LeafDetail({ detail }: { detail: ItemDetail }) {
             watchedText="Mark unwatched"
             unwatchedText="Mark watched"
           />
+
+          <AddToPlaylistMenu mediaItemId={item.id} />
         </div>
 
         {canResume && <ResumeMeta positionMs={positionMs} durationMs={resumeDuration} />}
