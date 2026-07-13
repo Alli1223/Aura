@@ -46,6 +46,14 @@ media mounts are read-only, and the container reports its own health via
 `/api/health`. Database migrations run automatically on container start
 (`prisma migrate deploy`), so upgrades need no manual migration step.
 
+## Production deployment
+
+Exposing Aura to other people (or the public internet) means putting it behind a
+reverse proxy with TLS — HTTPS is required in production, since the session
+cookie is `Secure`. See **[docs/deployment.md](docs/deployment.md)** for complete
+reverse-proxy examples (Caddy, Traefik, nginx), streaming/transcode proxy tuning,
+an environment & settings reference, backup/restore, and a security checklist.
+
 ## Hardware acceleration
 
 By default Aura transcodes in **software** (libx264) — it works everywhere and
