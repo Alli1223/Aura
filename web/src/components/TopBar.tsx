@@ -2,6 +2,7 @@ import { Link } from 'react-router';
 
 import { usePublicSettings } from '../api/queries';
 import { MenuIcon } from './Icons';
+import { NewMediaMenu } from './NewMediaMenu';
 import { SearchBox } from './SearchBox';
 import { UserMenu } from './UserMenu';
 import styles from './TopBar.module.css';
@@ -37,6 +38,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       <SearchBox />
 
       <div className={styles.right}>
+        <NewMediaMenu />
         <UserMenu />
       </div>
     </header>

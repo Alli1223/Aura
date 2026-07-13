@@ -80,7 +80,7 @@ Legend: `[ ]` todo · `[x]` merged to main
 - [x] **watch-history** — Full per-user watch history page + admin server-wide stats (most watched, storage per library)
 - [x] **scheduled-tasks** — Task scheduler: periodic scans, cache/transcode cleanup, DB backup to `/config/backups`; admin task status UI
 - [x] **notifications-webhooks** — Outbound webhooks on events (media added, playback started) + admin API to manage them: webhook store, HMAC-signed fire-and-forget dispatcher, event emission from the scanner & playback-decision, admin CRUD + test endpoint
-- [ ] **web-new-media-indicator** — In-app "new media" indicator in the web app (badge/toast for recently-added items). Split out of notifications-webhooks (that item covers the server-side webhooks only); consumes the recently-added feed
+- [x] **web-new-media-indicator** — In-app "new media" indicator in the web app (badge/toast for recently-added items). Split out of notifications-webhooks (that item covers the server-side webhooks only); consumes the recently-added feed
 - [x] **api-tokens** — Personal API tokens for third-party clients/scripts, scoped read-only vs full, revocable; OpenAPI spec published at `/api/docs`
 - [x] **logs-viewer** — Admin log viewer with level filtering + download
 - [ ] **e2e-tests** — Playwright end-to-end suite: register→grant→browse→play happy path, access-control denial paths, admin flows; runs in CI against docker compose
