@@ -3,6 +3,7 @@ import { vi, type Mock } from 'vitest';
 import type { ActivitySession } from '../api/activity';
 import type { AccessMatrix, AdminSettings, AdminUser, ScanState, TaskStatus } from '../api/admin';
 import type { AdminStats } from '../api/adminStats';
+import type { Collection, CollectionDetail } from '../api/collections';
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { HistoryEntry } from '../api/history';
 import type { ContinueWatchingEntry } from '../api/home';
@@ -162,6 +163,34 @@ export function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
     ...overrides,
     watchState: { ...base.watchState, ...overrides.watchState },
   };
+}
+
+let collectionCounter = 0;
+/** A serialized collection with sensible defaults; override any field. */
+export function makeCollection(overrides: Partial<Collection> = {}): Collection {
+  collectionCounter += 1;
+  const id = overrides.id ?? `coll-${collectionCounter}`;
+  const base: Collection = {
+    id,
+    name: `Collection ${collectionCounter}`,
+    sortName: `collection ${String(collectionCounter).padStart(4, '0')}`,
+    overview: null,
+    source: 'manual',
+    tmdbCollectionId: null,
+    itemCount: 0,
+    posterUrl: `/api/collections/${id}/poster`,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  return { ...base, ...overrides };
+}
+
+/** A collection detail payload (collection summary + member items in order). */
+export function makeCollectionDetail(
+  collection: Collection,
+  items: MediaItem[] = [],
+): CollectionDetail {
+  return { collection: { ...collection, itemCount: items.length }, items };
 }
 
 let continueCounter = 0;
@@ -393,6 +422,12 @@ export interface MockApiConfig {
   adminStats?: AdminStats;
   /** Item detail payloads keyed by item id, served by GET /items/:id. */
   details?: Record<string, ItemDetail>;
+  /** Collections served by GET /collections. */
+  collections?: Collection[];
+  /** Collection detail payloads keyed by id, served by GET /collections/:id. */
+  collectionDetails?: Record<string, CollectionDetail>;
+  /** When true, GET /collections responds 500 (drives the error state). */
+  collectionsError?: boolean;
   /** Current password accepted by login / change-password. */
   password?: string;
   /** User returned by a successful login/register (defaults to the session). */
@@ -440,6 +475,8 @@ export interface MockApi {
     history: HistoryEntry[];
     adminStats: AdminStats;
     details: Record<string, ItemDetail>;
+    collections: Collection[];
+    collectionDetails: Record<string, CollectionDetail>;
     password: string;
     authUser: AuthUser | null;
     adminUsers: AdminUser[];
@@ -643,6 +680,8 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     history: config.history ?? [],
     adminStats: config.adminStats ?? makeAdminStats(),
     details: config.details ?? {},
+    collections: config.collections ?? [],
+    collectionDetails: config.collectionDetails ?? {},
     password: config.password ?? 'current-pass-123',
     authUser: config.authUser ?? config.session ?? null,
     adminUsers: config.adminUsers ?? [],
@@ -755,6 +794,27 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       const itemId = decodeURIComponent(historyDeleteMatch[1] ?? '');
       state.history = state.history.filter((entry) => entry.item.id !== itemId);
       return { status: 204 };
+    }
+
+    // ---- Collections -------------------------------------------------------
+    if (path === '/api/collections' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      if (config.collectionsError === true) {
+        return { status: 500, body: err('INTERNAL', 'Internal server error') };
+      }
+      return { status: 200, body: { collections: state.collections } };
+    }
+
+    // Single collection detail (the /:id/poster variant is binary, handled below).
+    const collectionDetailMatch = /^\/api\/collections\/([^/]+)$/.exec(path);
+    if (collectionDetailMatch !== null && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      const id = decodeURIComponent(collectionDetailMatch[1] ?? '');
+      const detail = state.collectionDetails[id];
+      if (detail === undefined) {
+        return { status: 404, body: err('NOT_FOUND', 'Collection not found') };
+      }
+      return { status: 200, body: detail };
     }
 
     // ---- Admin: server-wide stats ------------------------------------------
@@ -1225,9 +1285,13 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     const url = String(input);
     const path = new URL(url, 'http://localhost').pathname;
 
-    // Artwork endpoint: authenticated binary. Served here (not in `handle`,
-    // which is JSON-only) so AuthImage can turn it into a blob object URL.
-    if (/^\/api\/items\/[^/]+\/artwork\/(poster|backdrop)$/.test(path)) {
+    // Artwork endpoints: authenticated binary. Served here (not in `handle`,
+    // which is JSON-only) so AuthImage can turn them into blob object URLs. Both
+    // the per-item artwork route and the collection poster route land here.
+    if (
+      /^\/api\/items\/[^/]+\/artwork\/(poster|backdrop)$/.test(path) ||
+      /^\/api\/collections\/[^/]+\/poster$/.test(path)
+    ) {
       if (!hasBearer(init)) {
         return Promise.resolve(
           new Response(JSON.stringify(err('UNAUTHORIZED', 'Missing token')), {

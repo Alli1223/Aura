@@ -26,6 +26,7 @@ import { activityRoutes } from './routes/activity.js';
 import { adminStatsRoutes } from './routes/admin-stats.js';
 import { apiTokenRoutes } from './routes/api-tokens.js';
 import { authRoutes } from './routes/auth.js';
+import { collectionRoutes } from './routes/collections.js';
 import { healthRoutes } from './routes/health.js';
 import { historyRoutes } from './routes/history.js';
 import { imageRoutes } from './routes/images.js';
@@ -329,6 +330,9 @@ export function buildApp(
   void app.register(searchRoutes, { prefix: '/api' });
   // Per-user watch history: /api/history and /api/history/:id.
   void app.register(historyRoutes, { prefix: '/api' });
+  // Collections: /api/collections (browse), /:id (detail), /:id/poster,
+  // + admin CRUD & membership. The poster route needs the artwork config.
+  void app.register(collectionRoutes, { prefix: '/api/collections', config });
   // Admin server-wide statistics: /api/admin/stats.
   void app.register(adminStatsRoutes, { prefix: '/api/admin' });
   // Admin scheduled-task status + manual trigger API.

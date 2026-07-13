@@ -155,6 +155,15 @@ export function HistoryIcon(props: IconProps) {
   );
 }
 
+export function CollectionsIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="7" width="13" height="14" rx="2" />
+      <path d="M7 4h9M9 1.5h7" />
+    </Svg>
+  );
+}
+
 /** Dispatches to the icon that matches a library type. */
 export function LibraryIcon({ type, ...props }: IconProps & { type: LibraryType }) {
   switch (type) {

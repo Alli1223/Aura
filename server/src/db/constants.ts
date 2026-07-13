@@ -25,6 +25,13 @@ export const STREAM_TYPES = ['video', 'audio', 'subtitle'] as const;
 export type StreamType = (typeof STREAM_TYPES)[number];
 export const streamTypeSchema = z.enum(STREAM_TYPES);
 
+// How a Collection came to exist: "manual" collections are admin-curated;
+// "tmdb" collections are auto-created from a movie's TMDB `belongs_to_collection`
+// during enrichment (keyed by tmdbCollectionId so re-enriching never dupes).
+export const COLLECTION_SOURCES = ['manual', 'tmdb'] as const;
+export type CollectionSource = (typeof COLLECTION_SOURCES)[number];
+export const collectionSourceSchema = z.enum(COLLECTION_SOURCES);
+
 // Personal API token scopes. "read" tokens may only make safe (GET/HEAD)
 // requests; "full" tokens may make any request the owning user could, still
 // bounded by the user's role (admin routes stay admin-only) and library grants.

@@ -189,9 +189,10 @@ model MediaItem {
   addedAt               DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  genres      Genre[]
-  files       MediaFile[]
-  watchStates WatchState[]
+  genres          Genre[]
+  files           MediaFile[]
+  watchStates     WatchState[]
+  collectionItems CollectionItem[]
 
   @@index([libraryId, type])
   @@index([parentId])
@@ -203,6 +204,48 @@ model Genre {
   name String @unique
 
   mediaItems MediaItem[]
+}
+
+/// A named grouping of media items (Plex-style collections). `source` is one of
+/// COLLECTION_SOURCES: "manual" (admin-curated) or "tmdb" (auto-created from a
+/// movie's `belongs_to_collection` during TMDB enrichment). A tmdb collection
+/// is keyed by its `tmdbCollectionId` (unique) so re-enriching a member never
+/// duplicates it. `posterPath` follows the same artwork-URI convention as
+/// MediaItem (e.g. `tmdb:<path>`); when null the read API falls back to the
+/// first accessible member's poster. Membership + ordering live in
+/// CollectionItem.
+model Collection {
+  id               String   @id @default(cuid())
+  name             String
+  /// Sort key derived from `name` (article moved to the end), like sortTitle.
+  sortName         String
+  overview         String?
+  posterPath       String?
+  /// One of COLLECTION_SOURCES: "manual" | "tmdb".
+  source           String   @default("manual")
+  /// TMDB collection id for auto-collections; null for manual ones. Unique when
+  /// set so a re-enrich upserts the same collection.
+  tmdbCollectionId Int?     @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  items CollectionItem[]
+
+  @@index([sortName])
+}
+
+/// Membership of a MediaItem in a Collection, with an explicit `order` for the
+/// curated sequence. Deleting either side cascades the membership away.
+model CollectionItem {
+  id           String     @id @default(cuid())
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  mediaItemId  String
+  mediaItem    MediaItem  @relation(fields: [mediaItemId], references: [id], onDelete: Cascade)
+  order        Int        @default(0)
+
+  @@unique([collectionId, mediaItemId])
+  @@index([mediaItemId])
 }
 
 /// A physical file on disk backing a media item. `size`/`mtimeMs` are BigInt
