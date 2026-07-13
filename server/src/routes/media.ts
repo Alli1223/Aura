@@ -9,6 +9,7 @@ import {
 } from '../auth/access.js';
 import type { AuthUser } from '../auth/types.js';
 import { getPrisma } from '../db/client.js';
+import { writeAuditLog } from '../lib/audit.js';
 import { notFoundError, sendError } from '../lib/errors.js';
 import {
   getHomeRecentlyAdded,
@@ -17,7 +18,7 @@ import {
   getLibraryRecentlyAdded,
   listLibraryItems,
 } from '../lib/media-query.js';
-import { parseParams } from '../lib/validation.js';
+import { parseBody, parseParams } from '../lib/validation.js';
 
 // Read-only browse API the web app consumes: library listings, item detail,
 // container children and recently-added feeds. Every route authenticates and
@@ -74,6 +75,50 @@ const recentlyAddedQuerySchema = z.object({
     .default(RECENTLY_ADDED_DEFAULT_LIMIT),
 });
 
+const ITEM_NOT_FOUND_MESSAGE = 'Media item not found';
+const NOT_A_SHOW_MESSAGE = 'Skip config can only be set on a show';
+
+// A show's intro/credits skip offsets (skip-markers). Each field is an optional,
+// nullable, non-negative ms offset: a number sets it, `null` clears it, and an
+// omitted field is left unchanged on update. At least one must be present, and
+// the two credits offsets are mutually exclusive (the absolute start would
+// always win over the from-end one, so accepting both would be ambiguous).
+const skipConfigBodySchema = z
+  .object({
+    introEndMs: z.number().int().nonnegative().nullable().optional(),
+    creditsStartMs: z.number().int().nonnegative().nullable().optional(),
+    creditsFromEndMs: z.number().int().nonnegative().nullable().optional(),
+  })
+  .refine(
+    (body) =>
+      body.introEndMs !== undefined ||
+      body.creditsStartMs !== undefined ||
+      body.creditsFromEndMs !== undefined,
+    { message: 'At least one of introEndMs, creditsStartMs or creditsFromEndMs must be provided' },
+  )
+  .refine((body) => !(body.creditsStartMs != null && body.creditsFromEndMs != null), {
+    message: 'Provide only one of creditsStartMs or creditsFromEndMs',
+  });
+
+/** The safe skip-config projection returned by the GET/PUT routes. */
+interface SerializedSkipConfig {
+  introEndMs: number | null;
+  creditsStartMs: number | null;
+  creditsFromEndMs: number | null;
+}
+
+function serializeSkipConfig(config: {
+  introEndMs: number | null;
+  creditsStartMs: number | null;
+  creditsFromEndMs: number | null;
+}): SerializedSkipConfig {
+  return {
+    introEndMs: config.introEndMs,
+    creditsStartMs: config.creditsStartMs,
+    creditsFromEndMs: config.creditsFromEndMs,
+  };
+}
+
 /** First zod issue message, sent as the standard 400 VALIDATION body. */
 function sendValidationError(reply: FastifyReply, issue: string | undefined): FastifyReply {
   return sendError(reply, 400, 'VALIDATION', issue ?? 'Invalid query parameters');
@@ -98,6 +143,7 @@ async function assertLibraryReadable(user: AuthUser, libraryId: string): Promise
 
 export const mediaRoutes: FastifyPluginAsync = async (app) => {
   const authedOnly = { preHandler: [app.authenticate] };
+  const adminOnly = { preHandler: [app.authenticate, app.requireAdmin] };
 
   // Paginated/sorted/filtered top-level items of a library (poster grid).
   app.get('/libraries/:id/items', authedOnly, async (request, reply) => {
@@ -162,5 +208,80 @@ export const mediaRoutes: FastifyPluginAsync = async (app) => {
     const item = await assertMediaItemAccess(request.user, params.id);
     const items = await getItemChildren(request.user.id, item);
     return { items };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin: per-show intro/credits skip config (skip-markers). Both routes are
+  // admin-only (requireAdmin), so no library 404 cloak is needed — an admin can
+  // reach every item. A missing item is 404; an existing non-show item is 400.
+  // ---------------------------------------------------------------------------
+
+  // Read a show's skip config (null when none has been set).
+  app.get('/items/:id/skip-config', adminOnly, async (request, reply) => {
+    const params = parseParams(itemIdParamsSchema, request.params, reply);
+    if (params === undefined) return reply;
+    const prisma = getPrisma();
+    const item = await prisma.mediaItem.findUnique({
+      where: { id: params.id },
+      select: { id: true, type: true },
+    });
+    if (item === null) return sendError(reply, 404, 'NOT_FOUND', ITEM_NOT_FOUND_MESSAGE);
+    if (item.type !== 'show') return sendError(reply, 400, 'VALIDATION', NOT_A_SHOW_MESSAGE);
+    const config = await prisma.showSkipConfig.findUnique({ where: { showItemId: item.id } });
+    return { config: config === null ? null : serializeSkipConfig(config) };
+  });
+
+  // Set/clear a show's skip offsets. Upserts the ShowSkipConfig row; only the
+  // provided fields change (an omitted field is left as-is, `null` clears it).
+  app.put('/items/:id/skip-config', adminOnly, async (request, reply) => {
+    const params = parseParams(itemIdParamsSchema, request.params, reply);
+    if (params === undefined) return reply;
+    const body = parseBody(skipConfigBodySchema, request.body, reply);
+    if (body === undefined) return reply;
+
+    const prisma = getPrisma();
+    const item = await prisma.mediaItem.findUnique({
+      where: { id: params.id },
+      select: { id: true, type: true },
+    });
+    if (item === null) return sendError(reply, 404, 'NOT_FOUND', ITEM_NOT_FOUND_MESSAGE);
+    if (item.type !== 'show') return sendError(reply, 400, 'VALIDATION', NOT_A_SHOW_MESSAGE);
+
+    const config = await prisma.showSkipConfig.upsert({
+      where: { showItemId: item.id },
+      // On create an omitted field defaults to null (the row starts unset).
+      create: {
+        showItemId: item.id,
+        introEndMs: body.introEndMs ?? null,
+        creditsStartMs: body.creditsStartMs ?? null,
+        creditsFromEndMs: body.creditsFromEndMs ?? null,
+      },
+      // On update `undefined` fields are skipped by Prisma, so an omitted field
+      // is preserved while `null` clears it.
+      update: {
+        introEndMs: body.introEndMs,
+        creditsStartMs: body.creditsStartMs,
+        creditsFromEndMs: body.creditsFromEndMs,
+      },
+    });
+
+    await writeAuditLog(
+      prisma,
+      {
+        action: 'skip_config.updated',
+        userId: request.user.id,
+        targetType: 'media_item',
+        targetId: item.id,
+        ip: request.ip,
+        details: {
+          introEndMs: config.introEndMs,
+          creditsStartMs: config.creditsStartMs,
+          creditsFromEndMs: config.creditsFromEndMs,
+        },
+      },
+      request.log,
+    );
+
+    return reply.send({ config: serializeSkipConfig(config) });
   });
 };

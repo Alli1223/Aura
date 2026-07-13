@@ -48,6 +48,15 @@ export interface ChapterInfo {
   title: string | null;
 }
 
+/** An intro/credits skip range for the player's Skip Intro / Skip Credits button. */
+export interface MarkerInfo {
+  type: 'intro' | 'credits';
+  /** Range start, milliseconds from the file start. */
+  startMs: number;
+  /** Range end, milliseconds from the file start. */
+  endMs: number;
+}
+
 /** A playable file/version of a movie or episode (no filesystem path leaked). */
 export interface MediaFileInfo {
   id: string;
@@ -63,6 +72,8 @@ export interface MediaFileInfo {
   subtitleStreams: SubtitleStreamInfo[];
   /** Chapter markers in file order; empty when the file has none. */
   chapters: ChapterInfo[];
+  /** Intro/credits skip ranges (chapters + the show's skip config); empty when none. */
+  markers: MarkerInfo[];
 }
 
 /** A serialized episode carries the extra fields a play button needs. */

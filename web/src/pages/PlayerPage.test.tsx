@@ -24,6 +24,7 @@ import {
   type MockApi,
   type MockApiConfig,
 } from '../test/mockApi';
+import { LocationProbe } from '../test/LocationProbe';
 import { createTestQueryClient, renderApp } from '../test/renderApp';
 
 // hls.js is mocked wholesale: a fake class recording its instances plus the
@@ -690,6 +691,141 @@ describe('PlayerPage — playlist queue (continuous playback)', () => {
     expect(await screen.findByRole('dialog', { name: 'Playback finished' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /replay/i })).toBeInTheDocument();
     expect(screen.queryByText('Up next')).not.toBeInTheDocument();
+  });
+});
+
+describe('PlayerPage — skip intro / credits markers', () => {
+  /** A 1000s movie with a resolved duration and the given skip markers. */
+  const movieWithMarkers = (
+    markers: { type: 'intro' | 'credits'; startMs: number; endMs: number }[],
+  ): MockApiConfig => {
+    const item = makeItem({ id: 'movie-1', type: 'movie', title: 'Movie', runtimeMs: 1_000_000 });
+    return {
+      decisions: { 'file-1': makeDirectDecision('file-1') },
+      details: {
+        'movie-1': makeDetail(item, {
+          files: [makeFile({ id: 'file-1', durationMs: 1_000_000, markers })],
+        }),
+      },
+    };
+  };
+
+  it('shows "Skip Intro" within the intro range and seeks past it on click', async () => {
+    setup(
+      movieWithMarkers([{ type: 'intro', startMs: 0, endMs: 60_000 }]),
+      '/player/file-1?item=movie-1',
+    );
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    // Playback begins at t=0, inside [0, 60000) => the button is offered.
+    const skip = await screen.findByRole('button', { name: 'Skip Intro' });
+    fireEvent.click(skip);
+
+    // Direct play: seeking sets currentTime to the marker end (60s).
+    expect(video.currentTime).toBe(60);
+    // Now past the intro, the button disappears.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Skip Intro' })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('shows "Skip Credits" only once the playhead enters the credits range', async () => {
+    setup(
+      movieWithMarkers([{ type: 'credits', startMs: 900_000, endMs: 1_000_000 }]),
+      '/player/file-1?item=movie-1',
+    );
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    // At t=0 there is no credits button yet.
+    expect(screen.queryByRole('button', { name: 'Skip Credits' })).not.toBeInTheDocument();
+
+    // Advance into the credits range.
+    video.currentTime = 950;
+    fireEvent.timeUpdate(video);
+
+    const skip = await screen.findByRole('button', { name: 'Skip Credits' });
+    fireEvent.click(skip);
+    // No next item queued => seeks to the end of the credits marker (1000s).
+    expect(video.currentTime).toBe(1000);
+  });
+
+  it('hides the skip button outside every marker range', async () => {
+    setup(
+      movieWithMarkers([{ type: 'intro', startMs: 0, endMs: 60_000 }]),
+      '/player/file-1?item=movie-1',
+    );
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    // Move well past the intro; no marker covers this position.
+    video.currentTime = 300;
+    fireEvent.timeUpdate(video);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('skip-button')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('renders no skip button when the file has no markers', async () => {
+    setup(movieWithMarkers([]), '/player/file-1?item=movie-1');
+    await screen.findByTestId('player-video');
+    expect(screen.queryByTestId('skip-button')).not.toBeInTheDocument();
+  });
+
+  it('"Skip Credits" advances to the next queued item when one exists', async () => {
+    let location: Location | undefined;
+    const item = makeItem({ id: 'a', type: 'episode', title: 'Alpha', runtimeMs: 1_000_000 });
+    installMockApi({
+      session: makeUser({ autoplayNextEpisode: true }),
+      decisions: {
+        'file-1': makeDirectDecision('file-1'),
+        'file-2': makeDirectDecision('file-2'),
+      },
+      details: {
+        a: makeDetail(item, {
+          files: [
+            makeFile({
+              id: 'file-1',
+              durationMs: 1_000_000,
+              markers: [{ type: 'credits', startMs: 900_000, endMs: 1_000_000 }],
+            }),
+          ],
+        }),
+      },
+    });
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/player/file-1',
+            search: '?item=a',
+            state: {
+              queue: [{ mediaFileId: 'file-2', itemId: 'b', title: 'Bravo' }],
+            },
+          },
+        ]}
+      >
+        <Providers queryClient={createTestQueryClient()}>
+          <AppRoutes />
+          <LocationProbe onLocation={(loc) => (location = loc)} />
+        </Providers>
+      </MemoryRouter>,
+    );
+
+    const video = (await screen.findByTestId('player-video')) as HTMLVideoElement;
+    await waitFor(() => expect(video.getAttribute('src')).toContain('stream-token'));
+
+    video.currentTime = 950;
+    fireEvent.timeUpdate(video);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Skip Credits' }));
+    await waitFor(() => expect(location?.pathname).toBe('/player/file-2'));
+    expect(new URLSearchParams(location?.search ?? '').get('item')).toBe('b');
   });
 });
 

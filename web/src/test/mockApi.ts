@@ -297,6 +297,7 @@ export function makeFile(overrides: Partial<MediaFileInfo> = {}): MediaFileInfo 
     audioStreams: [],
     subtitleStreams: [],
     chapters: [],
+    markers: [],
     ...overrides,
   };
 }

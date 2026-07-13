@@ -12,7 +12,7 @@ import {
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import { ApiError } from '../api/client';
-import { useItemDetail, type ChapterInfo } from '../api/detail';
+import { useItemDetail, type ChapterInfo, type MarkerInfo } from '../api/detail';
 import { usePlaylist } from '../api/playlists';
 import {
   detectClientCapabilities,
@@ -864,6 +864,8 @@ interface StageProps {
   autoplayNextEpisode: boolean;
   /** Chapter markers for the current file's timeline; empty when none. */
   chapters: ChapterInfo[];
+  /** Intro/credits skip ranges for the Skip button; empty when none. */
+  markers: MarkerInfo[];
   nextQueue: PlayDescriptor[];
   onBack: () => void;
 }
@@ -1078,6 +1080,31 @@ function PlayerStage(props: StageProps) {
 
   const next = props.nextQueue[0] ?? null;
 
+  // The skip marker (intro/credits) covering the current source position, or
+  // null. `[startMs, endMs)` so the button disappears exactly at the marker end.
+  const activeMarker = useMemo(() => {
+    const nowMs = engine.currentTimeSec * 1000;
+    return props.markers.find((marker) => nowMs >= marker.startMs && nowMs < marker.endMs) ?? null;
+  }, [engine.currentTimeSec, props.markers]);
+
+  const skipActive = useCallback(
+    (marker: MarkerInfo) => {
+      showControls();
+      // Credits: jump straight to the next queued item when there is one;
+      // otherwise (and always for an intro) seek to the end of the marker.
+      if (marker.type === 'credits' && next !== null) {
+        goToNext();
+        return;
+      }
+      engine.seekTo(marker.endMs / 1000);
+    },
+    [engine, goToNext, next, showControls],
+  );
+
+  // Hide the skip button whenever a blocking overlay owns the screen.
+  const skipVisible =
+    activeMarker !== null && engine.loadError === null && resumeResolved && !engine.ended;
+
   return (
     <div
       ref={containerRef}
@@ -1142,6 +1169,17 @@ function PlayerStage(props: StageProps) {
           onBack={props.onBack}
         />
       ) : null}
+
+      {skipVisible && activeMarker !== null && (
+        <button
+          type="button"
+          className={styles.skipButton}
+          data-testid="skip-button"
+          onClick={() => skipActive(activeMarker)}
+        >
+          {activeMarker.type === 'intro' ? 'Skip Intro' : 'Skip Credits'}
+        </button>
+      )}
 
       <PlayerControls
         title={props.title}
@@ -1268,6 +1306,7 @@ function PlayerView({
   const detail = detailQuery.data;
   const file = detail?.files.find((candidate) => candidate.id === mediaFileId) ?? detail?.files[0];
   const chapters = file?.chapters ?? [];
+  const markers = file?.markers ?? [];
   const durationMs = file?.durationMs ?? detail?.item.runtimeMs ?? null;
   const sourceDurationSec = durationMs !== null && durationMs > 0 ? durationMs / 1000 : 0;
   const watchState = detail?.item.watchState;
@@ -1298,6 +1337,7 @@ function PlayerView({
         preferredSubtitleLanguage={user?.preferredSubtitleLanguage ?? null}
         autoplayNextEpisode={user?.autoplayNextEpisode ?? true}
         chapters={chapters}
+        markers={markers}
         nextQueue={nextQueue}
         onBack={onBack}
       />

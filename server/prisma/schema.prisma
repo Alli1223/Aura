@@ -195,6 +195,8 @@ model MediaItem {
   watchStates     WatchState[]
   collectionItems CollectionItem[]
   playlistItems   PlaylistItem[]
+  /// Present only on shows (skip-markers): the show's intro/credits offsets.
+  skipConfig      ShowSkipConfig?
 
   @@index([libraryId, type])
   @@index([parentId])
@@ -291,6 +293,25 @@ model Chapter {
 
   @@unique([mediaFileId, index])
   @@index([mediaFileId])
+}
+
+/// Per-show intro/credits skip configuration (skip-markers). Keyed one-to-one
+/// by the show MediaItem (`showItemId` unique). Used as a FALLBACK when a file
+/// has no chapter-based intro/credits marker: `introEndMs` synthesises an intro
+/// `[0, introEndMs]`; `creditsStartMs` (absolute) or `creditsFromEndMs` (from
+/// the file's end) synthesises a credits marker ending at the file duration.
+/// All offsets are milliseconds; null means "unset" (no synthesised marker for
+/// that side). Deleting the show cascades this row away. Derivation lives in
+/// src/lib/skip-markers.ts.
+model ShowSkipConfig {
+  id               String    @id @default(cuid())
+  showItemId       String    @unique
+  showItem         MediaItem @relation(fields: [showItemId], references: [id], onDelete: Cascade)
+  introEndMs       Int?
+  creditsStartMs   Int?
+  creditsFromEndMs Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 /// ffprobe stream info per file, used for playback/transcode decisions.
