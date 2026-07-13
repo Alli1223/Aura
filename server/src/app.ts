@@ -12,12 +12,14 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import Fastify from 'fastify';
 import type { FastifyError, FastifyInstance, FastifyServerOptions } from 'fastify';
+import pino from 'pino';
 
 import { authenticate } from './auth/authenticate.js';
 import { requireAdmin } from './auth/guards.js';
 import { ACCESS_TOKEN_TTL } from './auth/types.js';
 import { loadConfig, RATE_LIMIT_TIME_WINDOW, type Config } from './config.js';
 import { sendError } from './lib/errors.js';
+import { createLogFileStream } from './lib/log-file.js';
 import { loadOrCreateSecrets } from './lib/secrets.js';
 import { getSetting } from './lib/settings.js';
 import { HlsSessionManager } from './streaming/hls-session.js';
@@ -30,6 +32,7 @@ import { healthRoutes } from './routes/health.js';
 import { historyRoutes } from './routes/history.js';
 import { imageRoutes } from './routes/images.js';
 import { libraryRoutes } from './routes/libraries.js';
+import { logsRoutes } from './routes/logs.js';
 import { mediaRoutes } from './routes/media.js';
 import { qualityRoutes } from './routes/qualities.js';
 import { scanRoutes } from './routes/scan.js';
@@ -103,9 +106,30 @@ const REDACT_PATHS = [
 type LoggerOption = FastifyServerOptions['logger'];
 
 /**
+ * Builds a pino multistream that fans every (already-redacted) log line out to
+ * BOTH stdout and the persisted JSONL file, so the admin log viewer has
+ * something to read without changing what stdout gets. Returns undefined when
+ * file logging is disabled (LOG_FILE_ENABLED=false / NODE_ENV=test), leaving the
+ * caller with a stdout-only logger. Each stream is at level 'trace' so the pino
+ * instance's own level (config.LOG_LEVEL) is the only gate.
+ */
+function buildLogFileStream(config: Config): pino.MultiStreamRes | undefined {
+  if (!config.LOG_FILE_ENABLED) return undefined;
+  const fileStream = createLogFileStream({
+    filePath: config.LOG_FILE,
+    maxBytes: config.LOG_MAX_BYTES,
+  });
+  return pino.multistream([
+    { level: 'trace', stream: process.stdout },
+    { level: 'trace', stream: fileStream },
+  ]);
+}
+
+/**
  * Applies the hardening defaults (level from config, secret redaction) to
- * whatever logger option the caller passed. Redaction paths are always
- * enforced; tests may inject a stream but cannot drop redaction.
+ * whatever logger option the caller passed, and — unless the caller injected
+ * its own stream — tees output to the persisted log file. Redaction paths are
+ * always enforced; tests may inject a stream but cannot drop redaction.
  */
 function resolveLoggerOptions(config: Config, logger: LoggerOption): LoggerOption {
   if (logger === false) return false;
@@ -113,12 +137,18 @@ function resolveLoggerOptions(config: Config, logger: LoggerOption): LoggerOptio
     level: config.LOG_LEVEL,
     redact: { paths: [...REDACT_PATHS], censor: '[REDACTED]' },
   };
+  const withFile = <T extends object>(options: T): LoggerOption => {
+    const stream = buildLogFileStream(config);
+    return (stream === undefined ? options : { ...options, stream }) as LoggerOption;
+  };
   if (logger === undefined) {
     // Silent by default under test so suites stay readable; callers opt in.
-    return config.NODE_ENV === 'test' ? false : base;
+    return config.NODE_ENV === 'test' ? false : withFile(base);
   }
-  if (logger === true) return base;
-  return { ...logger, ...base, level: logger.level ?? base.level };
+  if (logger === true) return withFile(base);
+  const merged = { ...logger, ...base, level: logger.level ?? base.level };
+  // A caller-injected stream (e.g. a redaction test) wins; otherwise tee to file.
+  return logger.stream === undefined ? withFile(merged) : merged;
 }
 
 export function buildApp(
@@ -335,6 +365,8 @@ export function buildApp(
   void app.register(tasksRoutes, { prefix: '/api/tasks' });
   // Admin outbound-webhook management API.
   void app.register(webhookRoutes, { prefix: '/api/webhooks' });
+  // Admin log viewer: read recent (level-filtered) entries + download the file.
+  void app.register(logsRoutes, { prefix: '/api/logs', config });
 
   if (webDistDir !== undefined && existsSync(webDistDir)) {
     const root = path.resolve(webDistDir);
