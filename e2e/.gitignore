@@ -1,0 +1,8 @@
+node_modules/
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/blob-report/
+
+# Generated test media (regenerated with ffmpeg on demand — never committed).
+fixtures/media/
