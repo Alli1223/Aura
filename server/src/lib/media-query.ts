@@ -17,6 +17,7 @@ import {
   type RatingFilter,
 } from './content-rating.js';
 import { notFoundError } from './errors.js';
+import { deriveSkipMarkers, type SkipConfig, type SkipMarker } from './skip-markers.js';
 import {
   type AggregateStateView,
   type ContinueWatchingEntry,
@@ -136,6 +137,11 @@ export interface SerializedFile {
   subtitleStreams: SerializedSubtitleStream[];
   /** Chapter markers in file order; empty when the file has none. */
   chapters: SerializedChapter[];
+  /**
+   * Intro/credits skip ranges derived from the file's chapters and the show's
+   * skip config (inherited episode -> season -> show); empty when none apply.
+   */
+  markers: SkipMarker[];
 }
 
 /** Detail payload: the item plus the sub-collection relevant to its type. */
@@ -219,6 +225,7 @@ export function serializeItem(
 
 function serializeFile(
   file: MediaFile & { streams: MediaStream[]; chapters: Chapter[] },
+  skipConfig: SkipConfig | null = null,
 ): SerializedFile {
   const byIndex = (a: MediaStream, b: MediaStream): number => a.streamIndex - b.streamIndex;
   const audioStreams = file.streams
@@ -250,6 +257,15 @@ function serializeFile(
       endMs: chapter.endMs,
       title: chapter.title,
     }));
+  const markers = deriveSkipMarkers({
+    chapters: chapters.map((chapter) => ({
+      startMs: chapter.startMs,
+      endMs: chapter.endMs,
+      title: chapter.title,
+    })),
+    durationMs: file.durationMs,
+    config: skipConfig,
+  });
   return {
     id: file.id,
     container: file.container,
@@ -263,6 +279,47 @@ function serializeFile(
     audioStreams,
     subtitleStreams,
     chapters,
+    markers,
+  };
+}
+
+/**
+ * The skip config that governs a movie/episode's files: a show's own config for
+ * its episodes (walking episode -> season -> show), or null for a movie (no
+ * show ancestor) or a show with no config set. Bounded to a few queries — a
+ * media hierarchy is at most show/season/episode deep.
+ */
+async function resolveShowSkipConfig(item: {
+  id: string;
+  type: string;
+  parentId: string | null;
+}): Promise<SkipConfig | null> {
+  const prisma = getPrisma();
+  let showId: string | null = null;
+  if (item.type === 'show') {
+    showId = item.id;
+  } else if (item.type === 'episode') {
+    let parentId = item.parentId;
+    for (let hop = 0; parentId !== null && hop < 6; hop += 1) {
+      const parent = await prisma.mediaItem.findUnique({
+        where: { id: parentId },
+        select: { id: true, type: true, parentId: true },
+      });
+      if (parent === null) break;
+      if (parent.type === 'show') {
+        showId = parent.id;
+        break;
+      }
+      parentId = parent.parentId;
+    }
+  }
+  if (showId === null) return null;
+  const config = await prisma.showSkipConfig.findUnique({ where: { showItemId: showId } });
+  if (config === null) return null;
+  return {
+    introEndMs: config.introEndMs,
+    creditsStartMs: config.creditsStartMs,
+    creditsFromEndMs: config.creditsFromEndMs,
   };
 }
 
@@ -844,12 +901,20 @@ export async function getItemDetail(userId: string, itemId: string): Promise<Ite
   if (full.type === 'movie' || full.type === 'episode') {
     // Only available (playable) files: a `missing` file must never be offered
     // as a play/version target — consistent with the episode-listing surface.
-    const files = await prisma.mediaFile.findMany({
-      where: { mediaItemId: full.id, status: 'available' },
-      include: { streams: true, chapters: { orderBy: { index: 'asc' } } },
-      orderBy: [{ addedAt: 'asc' }, { id: 'asc' }],
-    });
-    return { item, files: files.map(serializeFile), seasons: [], episodes: [] };
+    const [skipConfig, files] = await Promise.all([
+      resolveShowSkipConfig(full),
+      prisma.mediaFile.findMany({
+        where: { mediaItemId: full.id, status: 'available' },
+        include: { streams: true, chapters: { orderBy: { index: 'asc' } } },
+        orderBy: [{ addedAt: 'asc' }, { id: 'asc' }],
+      }),
+    ]);
+    return {
+      item,
+      files: files.map((file) => serializeFile(file, skipConfig)),
+      seasons: [],
+      episodes: [],
+    };
   }
   if (full.type === 'show') {
     return { item, files: [], seasons: await serializeSeasons(userId, full.id), episodes: [] };

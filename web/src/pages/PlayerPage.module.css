@@ -75,3 +75,47 @@
   gap: var(--space-3);
   margin-top: var(--space-2);
 }
+
+/* ---- Skip intro / credits button ---------------------------------------- */
+
+.skipButton {
+  position: absolute;
+  right: var(--space-6);
+  bottom: 6rem;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: #fff;
+  background: rgba(20, 20, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.1s ease;
+}
+
+.skipButton:hover {
+  background: rgba(40, 40, 40, 0.92);
+}
+
+.skipButton:active {
+  transform: scale(0.98);
+}
+
+.skipButton:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .skipButton {
+    right: var(--space-4);
+    bottom: 5rem;
+  }
+}
