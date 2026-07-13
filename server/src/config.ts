@@ -115,6 +115,33 @@ const envSchema = z
     /** Pino log level. Defaults to "info" ("warn" when NODE_ENV=test). */
     LOG_LEVEL: z.enum(LOG_LEVELS).optional(),
     /**
+     * Also persist logs (as JSONL) to `${CONFIG_DIR}/logs/aura.log` in addition
+     * to stdout, so the admin log viewer + download endpoint have something to
+     * read. Defaults to enabled, except under NODE_ENV=test where it defaults to
+     * disabled so suites never write log files (the log-viewer tests enable it
+     * explicitly against a temp CONFIG_DIR). Redaction still applies: it is
+     * enforced at the logger level, so the file output is redacted too.
+     */
+    LOG_FILE_ENABLED: z.stringbool().optional(),
+    /**
+     * Maximum number of parsed log lines the read endpoint (`GET /api/logs`)
+     * will scan/return — the size of the tail window. The per-request `limit`
+     * query is clamped to this. Default 1000; bounded at 1 and 100000.
+     */
+    LOG_MAX_LINES: z.coerce.number().int().min(1).max(100_000).default(1000),
+    /**
+     * Size (bytes) the log file may reach before it is rotated: the current
+     * file is renamed to `aura.log.1` (a single backup, overwriting any prior
+     * backup) and a fresh file is opened. Bounds disk use at ~2x this value.
+     * Default 5 MiB; bounded at 4 KiB and 1 GiB.
+     */
+    LOG_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .min(4 * 1024)
+      .max(1024 * 1024 * 1024)
+      .default(5 * 1024 * 1024),
+    /**
      * Master switch for rate limiting. Defaults to enabled, except under
      * NODE_ENV=test where it defaults to disabled so test suites can hammer
      * the API (rate limit tests re-enable it explicitly).
@@ -282,10 +309,13 @@ const envSchema = z
   .transform((env) => ({
     ...env,
     LOG_LEVEL: env.LOG_LEVEL ?? (env.NODE_ENV === 'test' ? ('warn' as const) : ('info' as const)),
+    LOG_FILE_ENABLED: env.LOG_FILE_ENABLED ?? env.NODE_ENV !== 'test',
     RATE_LIMIT_ENABLED: env.RATE_LIMIT_ENABLED ?? env.NODE_ENV !== 'test',
     WATCH_ENABLED: env.WATCH_ENABLED ?? env.NODE_ENV !== 'test',
     TASKS_ENABLED: env.TASKS_ENABLED ?? env.NODE_ENV !== 'test',
     TRICKPLAY_ENABLED: env.TRICKPLAY_ENABLED ?? env.NODE_ENV !== 'test',
+    /** Absolute-ish path of the persisted JSONL log file (see LOG_FILE_ENABLED). */
+    LOG_FILE: path.join(env.CONFIG_DIR, 'logs', 'aura.log'),
   }));
 
 export type Config = z.infer<typeof envSchema>;

@@ -6,6 +6,7 @@ import type { AdminStats } from '../api/adminStats';
 import type { DetailEpisode, ItemDetail, MediaFileInfo } from '../api/detail';
 import type { HistoryEntry } from '../api/history';
 import type { ContinueWatchingEntry } from '../api/home';
+import type { LogEntry } from '../api/logs';
 import type { MediaItem } from '../api/media';
 import type {
   PlaybackDecision,
@@ -86,6 +87,21 @@ export function makeTask(overrides: Partial<TaskStatus> = {}): TaskStatus {
     lastError: null,
     nextRunAt: null,
     runCount: 0,
+    ...overrides,
+  };
+}
+
+/** Level order used by the mock's log-level filter (mirrors the server). */
+const LOG_LEVEL_ORDER = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
+
+let logCounter = 0;
+/** A parsed log entry for the admin Logs section (server ParsedLogEntry shape). */
+export function makeLogEntry(overrides: Partial<LogEntry> = {}): LogEntry {
+  logCounter += 1;
+  return {
+    time: `2026-06-01T10:0${logCounter % 10}:00.000Z`,
+    level: 'info',
+    msg: `Log message ${logCounter}`,
     ...overrides,
   };
 }
@@ -409,6 +425,10 @@ export interface MockApiConfig {
   activitySessions?: ActivitySession[];
   /** When true, GET /activity/sessions responds 500 (drives the error state). */
   activitySessionsError?: boolean;
+  /** Log entries served (level-filtered) by GET /logs. */
+  logs?: LogEntry[];
+  /** When true, GET /logs responds 500 (drives the Logs error state). */
+  logsError?: boolean;
   /** Preset scan states keyed by library id. */
   scans?: Record<string, ScanState>;
   /** POST /tasks/:id/run returns 409 TASK_RUNNING for this task id. */
@@ -447,6 +467,7 @@ export interface MockApi {
     settings: AdminSettings;
     tasks: TaskStatus[];
     activitySessions: ActivitySession[];
+    logs: LogEntry[];
     scans: Record<string, ScanState>;
     decisions: Record<string, PlaybackDecision>;
     qualities: QualitiesResponse;
@@ -650,6 +671,7 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
     settings: { ...DEFAULT_ADMIN_SETTINGS, ...config.settings },
     tasks: config.tasks ?? [],
     activitySessions: config.activitySessions ?? [],
+    logs: config.logs ?? [],
     scans: config.scans ?? {},
     decisions: config.decisions ?? {},
     qualities: config.qualities ?? makeQualities(),
@@ -1152,6 +1174,26 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
       return { status: 204 };
     }
 
+    // ---- Admin: logs -------------------------------------------------------
+    if (path === '/api/logs' && method === 'GET') {
+      if (!hasBearer(init)) return { status: 401, body: err('UNAUTHORIZED', 'Missing token') };
+      if (config.logsError === true) {
+        return { status: 500, body: err('INTERNAL', 'Internal server error') };
+      }
+      const query = new URL(url, 'http://localhost').searchParams;
+      const level = query.get('level');
+      const limit = Number(query.get('limit') ?? '500');
+      let list = state.logs.slice();
+      if (level !== null) {
+        const threshold = LOG_LEVEL_ORDER.indexOf(level as (typeof LOG_LEVEL_ORDER)[number]);
+        list = list.filter(
+          (entry) =>
+            LOG_LEVEL_ORDER.indexOf(entry.level as (typeof LOG_LEVEL_ORDER)[number]) >= threshold,
+        );
+      }
+      return { status: 200, body: { entries: list.slice(-limit) } };
+    }
+
     // ---- Playback / streaming -----------------------------------------------
 
     // GET /api/qualities — the current user's selectable rungs (JWT-authed).
@@ -1243,6 +1285,28 @@ export function installMockApi(config: MockApiConfig = {}): MockApi {
         new Response(new Uint8Array([1, 2, 3]), {
           status: 200,
           headers: { 'Content-Type': 'image/webp' },
+        }),
+      );
+    }
+
+    // Log download: an authenticated text/ndjson attachment fetched as a blob
+    // (served here, not in `handle`, so downloadLogs can turn it into a blob).
+    if (path === '/api/logs/download') {
+      if (!hasBearer(init)) {
+        return Promise.resolve(
+          new Response(JSON.stringify(err('UNAUTHORIZED', 'Missing token')), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response('{"level":30,"time":1,"msg":"downloadable"}\n', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'Content-Disposition': 'attachment; filename="aura.log"',
+          },
         }),
       );
     }

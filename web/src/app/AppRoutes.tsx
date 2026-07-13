@@ -16,6 +16,7 @@ import { ActivitySection } from '../pages/admin/ActivitySection';
 import { AdminAccessPage } from '../pages/admin/AdminAccessPage';
 import { AdminLayout } from '../pages/admin/AdminLayout';
 import { AdminLibrariesPage } from '../pages/admin/AdminLibrariesPage';
+import { AdminLogsPage } from '../pages/admin/AdminLogsPage';
 import { AdminSettingsPage } from '../pages/admin/AdminSettingsPage';
 import { AdminStatsPage } from '../pages/admin/AdminStatsPage';
 import { AdminTasksPage } from '../pages/admin/AdminTasksPage';
@@ -68,6 +69,7 @@ export function AppRoutes() {
                 <Route path="tasks" element={<AdminTasksPage />} />
                 <Route path="activity" element={<ActivitySection />} />
                 <Route path="stats" element={<AdminStatsPage />} />
+                <Route path="logs" element={<AdminLogsPage />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFoundPage />} />
