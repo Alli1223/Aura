@@ -44,9 +44,16 @@
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
-  background: var(--color-accent);
+  background: linear-gradient(
+    140deg,
+    var(--color-aurora-green),
+    var(--color-aurora-teal) 40%,
+    var(--color-aurora-cyan) 70%,
+    var(--color-aurora-violet)
+  );
   color: var(--color-on-accent);
   font-weight: 800;
+  box-shadow: 0 0 14px rgba(53, 232, 164, 0.3);
 }
 
 .brandName {

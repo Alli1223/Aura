@@ -1,4 +1,5 @@
 .wrapper {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -6,9 +7,52 @@
   gap: var(--space-4);
   min-height: 100vh;
   padding: var(--space-5);
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+/* The auth screen is the first impression: a fuller aurora than the ambient
+   app glow, drifting slowly behind the sign-in card. */
+.wrapper::before {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
   background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(123, 92, 255, 0.14), transparent 60%),
-    var(--color-bg);
+    radial-gradient(60% 45% at 20% 8%, rgba(53, 232, 164, 0.32), transparent 60%),
+    radial-gradient(55% 42% at 78% 4%, rgba(143, 107, 255, 0.3), transparent 62%),
+    radial-gradient(50% 38% at 52% 0%, rgba(47, 217, 196, 0.26), transparent 60%),
+    radial-gradient(48% 36% at 88% 30%, rgba(55, 182, 240, 0.2), transparent 64%);
+  filter: blur(14px) saturate(1.2);
+  animation: auth-aurora 24s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+
+.wrapper > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes auth-aurora {
+  0% {
+    transform: translate3d(-4%, -2%, 0) scale(1.05);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(3%, 2%, 0) scale(1.14);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-2%, 4%, 0) scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wrapper::before {
+    animation: none;
+  }
 }
 
 .card {
@@ -34,14 +78,31 @@
   width: 34px;
   height: 34px;
   border-radius: var(--radius-sm);
-  background: var(--color-accent);
+  background: linear-gradient(
+    140deg,
+    var(--color-aurora-green),
+    var(--color-aurora-teal) 40%,
+    var(--color-aurora-cyan) 70%,
+    var(--color-aurora-violet)
+  );
   color: var(--color-on-accent);
   font-weight: 800;
+  box-shadow: 0 0 18px rgba(53, 232, 164, 0.35);
 }
 
 .brandName {
   font-size: var(--font-size-lg);
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  background: linear-gradient(
+    100deg,
+    var(--color-aurora-green),
+    var(--color-aurora-cyan) 55%,
+    var(--color-aurora-violet)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .title {
