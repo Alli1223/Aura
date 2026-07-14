@@ -14,12 +14,61 @@ body,
 
 body {
   margin: 0;
+  position: relative;
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: var(--font-size-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Signature: an ambient aurora curtain drifting across the top of the night
+ * sky, fixed behind all content so it reads as sky-glow in the page canvas.
+ * The top bar and sidebar sit on opaque surfaces above it; the content area is
+ * transparent, so the aurora shows through there. Slow, blurred, low — the one
+ * bold thing, kept quiet. Motion is disabled under prefers-reduced-motion.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -12% -12% auto -12%;
+  height: 78vh;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--aurora-curtain);
+  filter: blur(10px) saturate(1.15);
+  opacity: 0.85;
+  animation: aurora-drift 30s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  min-height: 100%;
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-3%, -2%, 0) scale(1.04);
+    opacity: 0.7;
+  }
+  50% {
+    transform: translate3d(4%, 1.5%, 0) scale(1.12);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate3d(-1%, 3%, 0) scale(1.07);
+    opacity: 0.78;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
 }
 
 h1,

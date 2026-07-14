@@ -1,38 +1,59 @@
 /*
- * Aura design tokens. A small, deliberately restrained set for a dark media
- * dashboard. Later screens extend this; keep additions here (not scattered).
+ * Aura design tokens — "Aurora Borealis".
+ *
+ * The palette is a polar night: a deep indigo-black sky lit by ribbons of
+ * luminous aurora green fading through teal and cyan into violet. Green is the
+ * brand accent (the iconic auroral colour); the full spectrum is exposed as
+ * --color-aurora-* and composed into --aurora-curtain, the app's signature
+ * ambient glow (see index.css / AuthLayout). Keep additions here, not scattered.
  */
 :root {
   color-scheme: dark;
 
-  /* Surfaces (darkest → most elevated) */
-  --color-bg: #0d0f14;
-  --color-surface: #141821;
-  --color-surface-2: #1b202b;
-  --color-surface-3: #232935;
-  --color-border: #2a313f;
-  --color-border-strong: #3a4354;
+  /* Surfaces — polar night, darkest → most elevated (cool indigo, not neutral) */
+  --color-bg: #060912;
+  --color-surface: #0c1322;
+  --color-surface-2: #131c30;
+  --color-surface-3: #1c2740;
+  --color-border: #26324c;
+  --color-border-strong: #38507a;
 
-  /* Text */
-  --color-text: #e8ebf2;
-  --color-text-muted: #9aa4b6;
-  --color-text-faint: #6b7488;
+  /* Text — cool, faintly cyan-tinted starlight */
+  --color-text: #e9f1f4;
+  --color-text-muted: #97a9c2;
+  --color-text-faint: #667a98;
 
-  /* Brand accent */
-  --color-accent: #7b5cff;
-  --color-accent-hover: #8b70ff;
-  --color-accent-active: #6a4bf0;
-  --color-accent-soft: rgba(123, 92, 255, 0.16);
-  --color-on-accent: #ffffff;
+  /* Brand accent — aurora green. Text on it is deep ink, not white. */
+  --color-accent: #34e6a4;
+  --color-accent-hover: #57f0ba;
+  --color-accent-active: #1fca8a;
+  --color-accent-soft: rgba(52, 230, 164, 0.16);
+  --color-on-accent: #04140f;
+
+  /* Aurora spectrum — the light ribbons. Used for the ambient curtain and the
+     occasional highlight; green→teal→cyan→violet→magenta, low sky to high. */
+  --color-aurora-green: #35e8a4;
+  --color-aurora-teal: #2fd9c4;
+  --color-aurora-cyan: #37b6f0;
+  --color-aurora-violet: #8f6bff;
+  --color-aurora-magenta: #c86bff;
 
   /* Status */
-  --color-danger: #f4576b;
-  --color-danger-soft: rgba(244, 87, 107, 0.14);
-  --color-success: #3ecf8e;
-  --color-success-soft: rgba(62, 207, 142, 0.14);
+  --color-danger: #ff6383;
+  --color-danger-soft: rgba(255, 99, 131, 0.14);
+  --color-success: #34e6a4;
+  --color-success-soft: rgba(52, 230, 164, 0.14);
 
-  /* Focus ring */
+  /* Focus ring — auroral green halo */
   --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+  /* The signature: a soft aurora curtain, concentrated at the top of the sky
+     and fading out. Reused by the ambient backdrop and the auth hero. */
+  --aurora-curtain:
+    radial-gradient(120% 70% at 18% -18%, rgba(53, 232, 164, 0.28), transparent 55%),
+    radial-gradient(90% 60% at 62% -12%, rgba(47, 217, 196, 0.24), transparent 58%),
+    radial-gradient(110% 68% at 88% -22%, rgba(143, 107, 255, 0.26), transparent 60%),
+    radial-gradient(70% 46% at 42% -8%, rgba(55, 182, 240, 0.2), transparent 62%);
 
   /* Spacing scale (4px base) */
   --space-1: 0.25rem;
